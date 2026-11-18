@@ -163,3 +163,61 @@ describe('parseSummaryReply (Wave 3)', () => {
     );
   });
 });
+
+describe('war-room LLM parsing fixes (2026-11-18)', () => {
+  const FULL_DRAFT = [
+    '## Goal',
+    'Add token-bucket rate limiting to the public API gateway so that a single noisy integration cannot degrade latency for every other merchant on the platform.',
+    '',
+    '## Context',
+    'The gateway currently lets any single integration consume the full request budget, and support tickets trace the worst latency spikes to exactly that pattern.',
+    '',
+    '## Acceptance criteria',
+    '- Requests beyond the configured quota return HTTP 429 with a Retry-After header.',
+    '- Quota is configurable per API key without a deploy.',
+    '',
+    '## Definition of done',
+    'The limiter is live on the public gateway, the per-key metrics are visible on the operations dashboard, and the runbook documents how to raise a quota.',
+  ].join('\n');
+
+  it('B3: a reply wrapped in code fences parses like an unfenced one', () => {
+    const sections = parseDraftMarkdown('```markdown\n' + FULL_DRAFT + '\n```');
+    expect(sections.map((section) => section.heading)).toEqual([
+      'Goal',
+      'Context',
+      'Acceptance criteria',
+      'Definition of done',
+    ]);
+  });
+
+  it('B4: numbered and bold-decorated headings satisfy the section contract', () => {
+    const decorated = FULL_DRAFT.replace('## Goal', '## 1. Goal')
+      .replace('## Context', '## **Context**')
+      .replace('## Acceptance criteria', '## 3. Acceptance criteria:')
+      .replace('## Definition of done', '## Definition of done:');
+    const sections = parseDraftMarkdown(decorated);
+    expect(sections).toHaveLength(4);
+  });
+
+  it('B5: a single-section draft is judged by a floor scaled to one section', () => {
+    const sections = parseDraftMarkdown('## Acceptance criteria\n- Works when retried once.', [
+      'Acceptance criteria',
+    ]);
+    expect(sections).toHaveLength(1);
+    expect(sections[0]?.paragraphs[0]).toContain('Works when retried once.');
+  });
+
+  it('F11: a draft containing a placeholder token is rejected outright', () => {
+    const withPlaceholder = FULL_DRAFT.replace(
+      'Add token-bucket rate limiting',
+      'TBD — add rate limiting',
+    );
+    expect(() => parseDraftMarkdown(withPlaceholder)).toThrow(/placeholder/);
+  });
+
+  it('B12: a dressed summary reply (bullet + bold label) yields the bare summary', () => {
+    expect(
+      parseSummaryReply('- **Summary:** Add token-bucket rate limiting to the API gateway'),
+    ).toBe('Add token-bucket rate limiting to the API gateway');
+  });
+});

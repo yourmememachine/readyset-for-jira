@@ -89,7 +89,12 @@ export async function fetchProjectReadiness(
 ): Promise<ProjectReadinessResult> {
   const records = await deps.store.getProjectScores(payload.projectKey);
   const settings = await deps.store.getSettings(payload.projectKey);
-  const stats = computeProjectStats(payload.projectKey, records.filter(isOpen), settings, 5);
+  // Project readiness passes the records unfiltered (war-room B20):
+  // computeProjectStats applies the project's Done policy itself,
+  // and pre-filtering silently overrode `donePolicy: 'include'` on
+  // this surface — the Coach counted a different population than the
+  // dashboard for the same project.
+  const stats = computeProjectStats(payload.projectKey, records, settings, 5);
   const scanState = await deps.store.getScanState(payload.projectKey);
   return {
     projectKey: payload.projectKey,
@@ -149,6 +154,10 @@ export async function fetchSuggestedFixes(
 ): Promise<SuggestedFixesResult> {
   const records = await deps.store.getProjectScores(payload.projectKey);
   const settings = await deps.store.getSettings(payload.projectKey);
+  // Fix-first surfaces stay open-only under BOTH Done policies
+  // (pinned by the actions B9 test): nominating a Done issue as the
+  // next thing to fix is never actionable, whatever the dashboard
+  // counts. Only fetchProjectReadiness follows the policy (B20).
   const stats = computeProjectStats(payload.projectKey, records.filter(isOpen), settings, 1);
   const worst = stats.worstOffenders[0];
   if (!worst) return { found: false, projectKey: payload.projectKey };
@@ -203,20 +212,36 @@ export async function fetchCompareIssues(
   const b = await fetchIssueReadiness(deps, { issueKey: payload.issueKeyB });
   const missing = [a, b].filter((result) => !result.found).map((result) => result.issueKey);
   if (missing.length > 0) return { found: false, missing };
+  const aById = new Map((a.checks ?? []).map((check) => [check.id, check]));
   const bById = new Map((b.checks ?? []).map((check) => [check.id, check]));
-  const differences = (a.checks ?? [])
-    .filter((check) => {
-      const other = bById.get(check.id);
-      return other !== undefined && other.passed !== check.passed;
+  // Differences over the UNION of both checklists (war-room B21):
+  // iterating A's checks only hid a check that exists solely on B —
+  // repro-steps on a Bug compared against a Story is exactly the
+  // check that explains the score gap. A check one issue does not
+  // carry is reported as not applicable on that side, never as a
+  // silent pass.
+  const allIds = [...new Set([...aById.keys(), ...bById.keys()])];
+  const differences = allIds
+    .filter((id) => {
+      const checkA = aById.get(id);
+      const checkB = bById.get(id);
+      // A check only one side carries counts as a difference only
+      // when that side FAILS it — a passing bug-only check explains
+      // nothing about a score gap.
+      if (!checkA) return checkB !== undefined && !checkB.passed;
+      if (!checkB) return !checkA.passed;
+      return checkA.passed !== checkB.passed;
     })
-    .map((check) => {
-      const other = bById.get(check.id);
+    .map((id) => {
+      const checkA = aById.get(id);
+      const checkB = bById.get(id);
+      const either = checkA ?? checkB;
       return {
-        label: check.label,
-        aPassed: check.passed,
-        bPassed: other?.passed ?? false,
-        aDetail: check.detail,
-        bDetail: other?.detail ?? '',
+        label: either?.label ?? id,
+        aPassed: checkA?.passed ?? true,
+        bPassed: checkB?.passed ?? true,
+        aDetail: checkA?.detail ?? 'This check does not apply to this issue.',
+        bDetail: checkB?.detail ?? 'This check does not apply to this issue.',
       };
     });
   return { found: true, a, b, differences };
@@ -240,6 +265,7 @@ export async function fetchFixFirst(
   );
   const records = await deps.store.getProjectScores(payload.projectKey);
   const settings = await deps.store.getSettings(payload.projectKey);
+  // Open-only under both Done policies, as in fetchSuggestedFixes.
   const stats = computeProjectStats(payload.projectKey, records.filter(isOpen), settings, limit);
   return {
     projectKey: payload.projectKey,

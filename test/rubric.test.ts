@@ -503,3 +503,52 @@ describe('custom weights (Wave 2)', () => {
     expect(nextFixFor(result.checks)?.id).toBe('linked-work');
   });
 });
+
+describe('war-room rubric fixes (2026-11-18)', () => {
+  it('B14: non-English criteria text counts as meaningful content instead of stripping to nothing', () => {
+    // The dedicated field filled with real Japanese criteria: before
+    // the fix, hasMeaningfulContent stripped everything but a-z0-9
+    // and the text measured ~0, failing the check by construction.
+    const viaField = makeIssue({
+      acceptanceCriteriaText: 'ログインできること。エラーが表示されること。',
+    });
+    expect(check(scoreIssue(viaField), 'acceptance-criteria').passed).toBe(true);
+    // Same for a criteria section written in Japanese under the
+    // (English) section heading.
+    const viaSection = makeIssue({
+      acceptanceCriteriaText: null,
+      descriptionText: [
+        'The gateway currently lets any single integration consume the full request budget for the whole platform, and support traces the worst latency spikes to that pattern.',
+        '',
+        '## Acceptance criteria',
+        '- ログインできること',
+        '- エラーが表示されること',
+      ].join('\n'),
+    });
+    expect(check(scoreIssue(viaSection), 'acceptance-criteria').passed).toBe(true);
+  });
+
+  it('B15: "Todo list" is ordinary prose, not a placeholder; TBD still fails', () => {
+    const ok = scoreIssue(
+      makeIssue({ descriptionText: `${LONG_DESCRIPTION}\n\nRollout order lives in the team Todo list.` }),
+    );
+    expect(check(ok, 'no-placeholders').passed).toBe(true);
+    const bad = scoreIssue(
+      makeIssue({ descriptionText: `${LONG_DESCRIPTION}\n\nOwner: TBD` }),
+    );
+    expect(check(bad, 'no-placeholders').passed).toBe(false);
+  });
+
+  it('B16: a prose sentence naming acceptance criteria is not a criteria section', () => {
+    const issue = makeIssue({
+      acceptanceCriteriaText: null,
+      descriptionText: [
+        'The gateway currently lets any single integration consume the full request budget for the whole platform.',
+        'Support tickets trace the worst latency spikes to exactly that pattern during partner launches.',
+        'Acceptance criteria are tracked in the linked design epic and reviewed weekly by the team.',
+        'The change must stay backwards compatible for existing API keys and roll out behind a flag.',
+      ].join('\n\n'),
+    });
+    expect(check(scoreIssue(issue), 'acceptance-criteria').passed).toBe(false);
+  });
+});

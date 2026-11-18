@@ -475,8 +475,8 @@ function ProjectPageApp() {
           <SectionMessage title="Scan in progress" appearance="information">
             <Text>
               ReadySet is still scanning this project — showing{' '}
-              {stats.openScored} scored open issues so far. The scan continues
-              automatically; you can also press Rescan now.
+              {stats.openScored} scored issues so far. Press Rescan now to
+              continue the scan, or the nightly rescan will finish it.
             </Text>
           </SectionMessage>
         ) : null}
@@ -497,21 +497,29 @@ function ProjectPageApp() {
             <Inline space="space.300">
               <Stack space="space.050">
                 <Heading size="medium">{stats.averageScore}</Heading>
-                <Text>Average readiness (open issues)</Text>
+                <Text>
+                  {settings.donePolicy === 'include'
+                    ? 'Average readiness (all scored issues)'
+                    : 'Average readiness (open issues)'}
+                </Text>
               </Stack>
               <Stack space="space.050">
                 <Heading size="medium">{stats.percentReady}%</Heading>
-                <Text>Open issues Ready</Text>
+                <Text>
+                  {settings.donePolicy === 'include' ? 'Scored issues Ready' : 'Open issues Ready'}
+                </Text>
               </Stack>
               <Stack space="space.050">
                 <Heading size="medium">{stats.openScored}</Heading>
-                <Text>Open issues scored</Text>
+                <Text>
+                  {settings.donePolicy === 'include' ? 'Issues scored' : 'Open issues scored'}
+                </Text>
               </Stack>
               <Stack space="space.050">
                 <Heading size="medium">{stats.becameReadyLast7Days.count}</Heading>
                 <Text>
                   Became Ready in the last 7 days ({stats.becameReadyLast7Days.percent}% of
-                  open issues)
+                  {settings.donePolicy === 'include' ? ' scored issues' : ' open issues'})
                 </Text>
               </Stack>
             </Inline>
@@ -528,7 +536,11 @@ function ProjectPageApp() {
                 {`Usage counters, last 7 days in this site (approximate — automatic rescans count too): ${data.analytics.scores} scores computed · ${data.analytics.drafts} drafts generated · ${data.analytics.applies} improvements applied.`}
               </Text>
             ) : null}
-            <Heading size="small">Lowest-scoring open issues</Heading>
+            <Heading size="small">
+              {settings.donePolicy === 'include'
+                ? 'Lowest-scoring issues'
+                : 'Lowest-scoring open issues'}
+            </Heading>
             <OffenderFilters
               records={stats.worstOffenders}
               filter={offenderFilter}
@@ -573,10 +585,10 @@ function ProjectPageApp() {
             ReadySet scores every open issue against a transparent rubric (description,
             acceptance criteria, estimate, links — plus reproduction steps for bugs) and
             mirrors each score into a Jira issue property, so JQL can find work that is
-            not ready: readysetScore &lt; 60. Improve drafts a better description from the
-            issue's own facts and shows the projected score before applying. Project
-            admins can retune thresholds, weights, and checks in the settings below.
-            Support: tdilip2501@gmail.com (within 2 business days).
+            not ready: readysetScore &lt; {settings.almostThreshold}. Improve drafts a
+            better description from the issue's own facts and shows the projected score
+            before applying. Project admins can retune thresholds, weights, and checks
+            in the settings below. Support: tdilip2501@gmail.com (within 2 business days).
           </Text>
         </SectionMessage>
         <Text>

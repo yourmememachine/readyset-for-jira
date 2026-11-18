@@ -42,8 +42,27 @@ const PLACEHOLDER_TOKEN_RE = new RegExp(
 /** Hyphenated marker; `\btodo\b` can never match it (cross-review A14). */
 const TO_DO_RE = /\bto-do\b(?!\s+list\b)/gi;
 const ACCEPTANCE_CRITERIA_RE = /acceptance criteria/i;
-/** A line that opens an acceptance-criteria section. */
-const AC_HEADING_RE = /^\s{0,3}(?:#{1,6}\s*)?acceptance criteria\b[:\s]*(.*)$/i;
+/**
+ * A line that opens an acceptance-criteria section. Two shapes count —
+ * a markdown heading (hash marks present, trailing text tolerated), or
+ * a plain label line: the phrase alone, or the phrase followed by a
+ * colon and an inline start. A prose sentence that merely begins with
+ * the words ("Acceptance criteria are not yet written — the PM will
+ * add them Friday") is NOT a heading (war-room B16): without heading
+ * marks or a colon it is a sentence, not a section label — the same
+ * guard the repro-heading pair below already applies (A3).
+ */
+const AC_HEADING_MD_RE = /^\s{0,3}#{1,6}\s*acceptance criteria\b[:\s]*(.*)$/i;
+const AC_HEADING_PLAIN_RE = /^\s{0,3}acceptance criteria\s*(?::\s*(.*))?$/i;
+
+/** The AC heading a line opens with, or null: `{ inline }` = text after the label. */
+function matchAcHeading(line: string): { inline: string } | null {
+  const md = line.match(AC_HEADING_MD_RE);
+  if (md) return { inline: md[1] ?? '' };
+  const plain = line.match(AC_HEADING_PLAIN_RE);
+  if (plain) return { inline: plain[1] ?? '' };
+  return null;
+}
 /** A markdown-style heading line (any level) — ends an AC section. */
 const HEADING_LINE_RE = /^\s{0,3}#{1,6}\s+\S/;
 
@@ -83,7 +102,10 @@ function hasMeaningfulContent(text: string): boolean {
     .replace(PLACEHOLDER_TOKEN_RE, ' ')
     .replace(TO_DO_RE, ' ')
     .replace(/to be (decided|determined|confirmed)/gi, ' ');
-  return withoutMarkers.replace(/[^a-z0-9]+/gi, '').length >= 3;
+  // Unicode letters/digits (war-room B14): stripping everything but
+  // a-z0-9 made non-English content fail by construction — a complete
+  // Japanese AC section stripped to length ~0.
+  return withoutMarkers.replace(/[^\p{L}\p{N}]+/gu, '').length >= 3;
 }
 
 /**
@@ -101,14 +123,14 @@ export function acceptanceCriteriaSectionBody(descriptionText: string): string |
   const lines = descriptionText.split('\n');
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i] ?? '';
-    const heading = line.match(AC_HEADING_RE);
+    const heading = matchAcHeading(line);
     if (!heading) continue;
     const bodyLines: string[] = [];
-    const inline = (heading[1] ?? '').trim();
+    const inline = heading.inline.trim();
     if (inline) bodyLines.push(inline);
     for (let j = i + 1; j < lines.length; j += 1) {
       const next = lines[j] ?? '';
-      if (HEADING_LINE_RE.test(next) || AC_HEADING_RE.test(next)) break;
+      if (HEADING_LINE_RE.test(next) || matchAcHeading(next)) break;
       bodyLines.push(next);
     }
     return bodyLines.join('\n').trim();
@@ -242,7 +264,13 @@ function findPlaceholder(text: string): string | null {
   let match: RegExpExecArray | null;
   while ((match = PLACEHOLDER_TOKEN_RE.exec(text)) !== null) {
     const token = (match[1] ?? '').toLowerCase();
-    if (token === 'todo' && !isTodoMarker(text, match.index, match[0])) continue;
+    if (token === 'todo') {
+      // "Todo list" is the product noun, not a marker — the same
+      // guard TO_DO_RE applies to the hyphenated form (war-room B15:
+      // a sentence-initial "Todo list sharing is broken" was flagged).
+      if (/^\s+list\b/i.test(text.slice(match.index + match[0].length))) continue;
+      if (!isTodoMarker(text, match.index, match[0])) continue;
+    }
     return match[0];
   }
   TO_DO_RE.lastIndex = 0;
@@ -253,6 +281,17 @@ function findPlaceholder(text: string): string | null {
     if (lower.includes(phrase)) return phrase;
   }
   return null;
+}
+
+/**
+ * Whether a text carries an unresolved placeholder marker, under the
+ * exact rules the no-placeholders check applies. Exported for the
+ * Improve draft parser (war-room C5): an LLM draft containing "TBD"
+ * would fail the very check it exists to fix, so the parser rejects
+ * it and the caller falls back to the marker-stripping template.
+ */
+export function containsPlaceholder(text: string): boolean {
+  return findPlaceholder(text) !== null;
 }
 
 function checkNoPlaceholders(issue: NormalizedIssue): CheckResult {
@@ -284,7 +323,7 @@ function specificTokens(summary: string): string[] {
     ...new Set(
       summary
         .toLowerCase()
-        .split(/[^a-z0-9]+/)
+        .split(/[^\p{L}\p{N}]+/u)
         .filter((token) => token.length >= 3 && !VAGUE_WORDS.has(token) && !STOPWORDS.has(token)),
     ),
   ];

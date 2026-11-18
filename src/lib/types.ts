@@ -180,6 +180,15 @@ export interface StoredScore extends ReadinessScore {
   settingsFingerprint: string;
   /** Which input produced this record; absent on pre-provenance records. */
   source?: ScoreSource;
+  /**
+   * Whether the `readyset` entity property is known to mirror this
+   * record (war-room A1/C2). The unchanged-score skip of the property
+   * PUT is only sound when the last write actually landed; a failed
+   * write leaves this false and every later rescore retries. Absent
+   * on records written before the flag existed — treated as unsynced,
+   * so they are rewritten once and healed.
+   */
+  propertySynced?: boolean;
   /** Issue type at compute time (Wave 2 dashboard filters). Absent on
    *  records written before the field existed, until rescored. */
   issueType?: string;

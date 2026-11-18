@@ -40,7 +40,13 @@ import {
   type RawJiraIssue,
 } from '../lib/jira';
 import type { ScoreSource } from '../lib/types';
-import { getEffectiveFieldMap, scoreAndStore, settingsFingerprint, type ResolverDeps } from './resolver';
+import {
+  getEffectiveFieldMap,
+  scoreAndStore,
+  settingsFingerprint,
+  syncScoreProperty,
+  type ResolverDeps,
+} from './resolver';
 
 export interface JiraIssueEvent {
   eventType: string;
@@ -179,6 +185,16 @@ export async function handleIssueEvent(
     cached.issueUpdated === issue.updated &&
     cached.settingsFingerprint === settingsFingerprint(settings, fieldMap)
   ) {
+    if (cached.propertySynced !== true) {
+      // The record is fresh but its entity property never landed
+      // (war-room A1): the early-exit must not freeze the JQL mirror
+      // in its failed state — retry the write on this event, which
+      // already paid for the payload.
+      const synced = await syncScoreProperty(deps, cached, settings, cached);
+      if (synced) {
+        await deps.store.saveScore({ ...cached, propertySynced: true });
+      }
+    }
     return { handled: true, issueKey: issue.key };
   }
 

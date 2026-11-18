@@ -56,7 +56,7 @@ modules:
   # judge them by.
   jira:workflowValidator:
     - key: readyset-require-almost
-      name: ReadySet — Require Almost ready (60+)
+      name: ReadySet — Require Almost ready
       description: >-
         Blocks the transition unless the issue's ReadySet readiness grade is
         Almost ready or Ready. Unscored issues pass.
@@ -66,7 +66,7 @@ modules:
         acceptance criteria until ReadySet scores it at least Almost ready,
         then try the transition again.
     - key: readyset-require-ready
-      name: ReadySet — Require Ready (80+)
+      name: ReadySet — Require Ready
       description: >-
         Blocks the transition unless the issue's ReadySet readiness grade is
         Ready. Unscored issues pass.

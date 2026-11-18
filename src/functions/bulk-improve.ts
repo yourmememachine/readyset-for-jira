@@ -20,6 +20,8 @@ export interface BulkImproveResult {
   newScore?: number;
   error?: string;
   skipped?: string;
+  /** The write landed but a post-write confirmation step failed (war-room B1). */
+  warning?: string;
 }
 
 // Three, not five (cross-review B1): each issue costs ~16 sequential
@@ -42,10 +44,15 @@ export async function bulkImproveTemplates(
     .sort((a, b) => a.score - b.score)
     .slice(0, BULK_LIMIT);
   const fieldMap = await getEffectiveFieldMap(deps);
+  // The pre-fetch reads as the invoking user, like every other UI
+  // read (war-room A5 residual): Apply re-reads asUser before writing
+  // in any case, so drafting from app-token data the admin cannot see
+  // bought nothing and leaked restricted content into a KVS draft.
+  const readAdapter = deps.jiraUser ?? deps.jira;
   const results: BulkImproveResult[] = [];
   for (const candidate of candidates) {
     try {
-      const raw = await deps.jira.getIssue(candidate.issueKey, fieldMap);
+      const raw = await readAdapter.getIssue(candidate.issueKey, fieldMap);
       if (!isScoreablePayload(raw)) {
         throw new Error(
           `Incomplete issue payload (missing: ${missingScoringFields(raw, fieldMap).join(', ')})`,
@@ -77,6 +84,7 @@ export async function bulkImproveTemplates(
         issueKey: candidate.issueKey,
         previousScore: applied.previousScore,
         newScore: applied.newScore,
+        ...(applied.postWriteWarning ? { warning: applied.postWriteWarning } : {}),
       });
     } catch (err) {
       results.push({

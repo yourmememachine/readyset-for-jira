@@ -67,6 +67,14 @@ export function toImproveMessage(err: unknown): string {
   if (message.includes('no longer available')) {
     return 'That draft is no longer available. Run Improve again to create a new one.';
   }
+  if (message.includes('not enough text')) {
+    // The backend's refusal is already the actionable instruction
+    // ("There is not enough text in this issue to suggest a better
+    // summary. Add a description first.") — pass it through verbatim
+    // (war-room C4). The generic retryable fallback hid it, and
+    // retrying a bare issue can never succeed.
+    return message;
+  }
   if (/HTTP \d{3}/.test(message)) {
     return toUserMessage(err);
   }
@@ -110,10 +118,18 @@ export function beginApply(state: ImproveFlowState): ImproveFlowState {
 /**
  * Apply succeeded. The draft is consumed; the panel refetches so the
  * score on screen becomes the real post-Apply score from the result.
+ * A post-write warning (war-room B1: the write landed, a confirmation
+ * step failed) rides along as the phase message — success with a
+ * note, never a retry offer.
  */
 export function applyLoaded(state: ImproveFlowState, result: ApplyPayload): ImproveFlowState {
   if (state.phase !== 'applying') return state;
-  return { phase: 'applied', draft: null, applied: result, message: null };
+  return {
+    phase: 'applied',
+    draft: null,
+    applied: result,
+    message: result.postWriteWarning ?? null,
+  };
 }
 
 /**

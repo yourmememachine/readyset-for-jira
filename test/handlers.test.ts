@@ -373,12 +373,14 @@ describe('rescan and scheduled rescan', () => {
       makeRawIssue({}, `RS-${index + 1}`),
     );
     const { deps, store } = makeDeps(issues);
-    await store.setRescanCheckpoint('RS', { nextPageToken: 'pg:100', seenKeys: ['RS-1'] });
+    // UI-origin checkpoint (war-room B8 split): a manual rescan is a
+    // UI flow and seeds/resumes/clears the `rescan-ui:` key only.
+    await store.setRescanCheckpoint('RS', { nextPageToken: 'pg:100', seenKeys: ['RS-1'] }, 'ui');
     const first = await rescanProject(deps, { projectKey: 'RS' });
     expect(first).toEqual({ projectKey: 'RS', scanned: 100, resumed: false, complete: false });
     const continued = await continueScanProject(deps, { projectKey: 'RS' });
     expect(continued).toEqual({ projectKey: 'RS', scanned: 50, resumed: true, complete: true });
-    expect(await store.getRescanCheckpoint('RS')).toBeUndefined();
+    expect(await store.getRescanCheckpoint('RS', 'ui')).toBeUndefined();
   });
 
   it('scheduled rescan covers every known project and resumes checkpoints', async () => {
@@ -802,5 +804,135 @@ describe('upgrade cross-review fixes (A1 event type gate, B2 property skip)', ()
     const changed = await getIssuePanel(deps, { issueKey: 'RS-1' });
     expect(changed.score).toBeLessThan(100);
     expect(jira.setScorePropertyCalls).toHaveLength(2);
+  });
+});
+
+describe('war-room fixes (2026-11-18)', () => {
+  it('F1: a failed property write is retried on the next panel open even when the score is unchanged', async () => {
+    const { deps, jira, store } = makeDeps([makeRawIssue()]);
+    jira.setScorePropertyError = new Error('property PUT failed');
+    const first = await getIssuePanel(deps, { issueKey: 'RS-1' });
+    expect(first.score).toBe(100);
+    expect(jira.setScorePropertyCalls).toHaveLength(1);
+    expect((await store.getScore('RS-1'))?.propertySynced).toBe(false);
+    jira.setScorePropertyError = null;
+    const second = await getIssuePanel(deps, { issueKey: 'RS-1' });
+    expect(second.fromCache).toBe(true);
+    expect(jira.setScorePropertyCalls).toHaveLength(2);
+    expect((await store.getScore('RS-1'))?.propertySynced).toBe(true);
+    // Once synced, an unchanged open does not write again.
+    await getIssuePanel(deps, { issueKey: 'RS-1' });
+    expect(jira.setScorePropertyCalls).toHaveLength(2);
+  });
+
+  it('F1: the event path retries a failed property write on a later event', async () => {
+    const raw = makeRawIssue();
+    const { deps, jira, store } = makeDeps([raw]);
+    jira.setScorePropertyError = new Error('property PUT failed');
+    await handleIssueEvent(deps, v2Event(raw));
+    expect((await store.getScore('RS-1'))?.propertySynced).toBe(false);
+    jira.setScorePropertyError = null;
+    const again = await handleIssueEvent(deps, v2Event(raw));
+    expect(again.handled).toBe(true);
+    expect((await store.getScore('RS-1'))?.propertySynced).toBe(true);
+    expect(jira.setScorePropertyCalls).toHaveLength(2);
+  });
+
+  it('F2: scan reconcile deletes the entity property of a vanished issue, not just its record', async () => {
+    const ghost = makeRawIssue({}, 'RS-9');
+    const { deps, jira, store } = makeDeps([makeRawIssue()]);
+    await scoreAndStore(
+      deps,
+      normalizeIssue(ghost, DEFAULT_FIELD_MAP),
+      DEFAULT_SETTINGS,
+      DEFAULT_FIELD_MAP,
+      'event',
+    );
+    expect(await store.getScore('RS-9')).toBeDefined();
+    // Reconcile is the scheduled scan's job (scanProject), not the
+    // manual rescan's — drive the path that reconciles.
+    await scanProject(deps, 'RS', { resume: false });
+    expect(await store.getScore('RS-9')).toBeUndefined();
+    expect(jira.deleteScorePropertyCalls).toContain('RS-9');
+  });
+
+  it('F3: with donePolicy include, a scan scores Done issues instead of filtering them out', async () => {
+    const done = makeRawIssue({}, 'RS-4');
+    done.fields.status = { name: 'Done', statusCategory: { key: 'done' } };
+    const { deps, store } = makeDeps([makeRawIssue(), done]);
+    await store.saveSettings('RS', { ...DEFAULT_SETTINGS, donePolicy: 'include' });
+    await rescanProject(deps, { projectKey: 'RS' });
+    expect(await store.getScore('RS-4')).toBeDefined();
+  });
+
+  it('F4: a field-list failure degrades to the default field map instead of failing the dashboard', async () => {
+    class FieldListFailJira extends FakeJiraAdapter {
+      calls = 0;
+      override async listFields(): Promise<JiraFieldInfo[]> {
+        this.calls += 1;
+        throw new Error('field metadata unavailable');
+      }
+    }
+    const jira = new FieldListFailJira([makeRawIssue()]);
+    const { deps } = makeDepsWithJira(jira);
+    const payload = await getProjectDashboard(deps, { projectKey: 'RS' });
+    expect(payload.stats.openScored).toBe(1);
+    // The failure is not cached: the next dashboard retries discovery
+    // instead of serving a cached failure for the process lifetime.
+    const afterFirst = jira.calls;
+    await getProjectDashboard(deps, { projectKey: 'RS' });
+    expect(jira.calls).toBeGreaterThan(afterFirst);
+  });
+
+  it('A6/F5: a failure inside the scoring loop marks the scan failed and keeps a resume checkpoint', async () => {
+    const { deps, store } = makeDeps([makeRawIssue(), makeRawIssueNoEstimate()]);
+    const original = store.saveScore.bind(store);
+    let calls = 0;
+    store.saveScore = async (record) => {
+      calls += 1;
+      if (calls === 2) throw new Error('KVS unavailable');
+      return original(record);
+    };
+    await expect(rescanProject(deps, { projectKey: 'RS' })).rejects.toThrow(/KVS unavailable/);
+    expect((await store.getScanState('RS'))?.status).toBe('failed');
+    expect(await store.getRescanCheckpoint('RS', 'ui')).toBeDefined();
+  });
+
+  it('A13: a tokenless non-final page fails the scan instead of reconciling a partial project', async () => {
+    class TokenlessJira extends FakeJiraAdapter {
+      override async searchIssues(
+        jql: string,
+        pageToken: string | null,
+        maxResults: number,
+      ): Promise<SearchPage> {
+        const page = await super.searchIssues(jql, pageToken, maxResults);
+        return { issues: page.issues, isLast: false };
+      }
+    }
+    const { deps, store } = makeDepsWithJira(new TokenlessJira([makeRawIssue()]));
+    await expect(rescanProject(deps, { projectKey: 'RS' })).rejects.toThrow(
+      /without a final page marker/,
+    );
+    expect((await store.getScanState('RS'))?.status).toBe('failed');
+    // The scored issue survives: no reconcile ran on a partial scan.
+    expect(await store.getScore('RS-1')).toBeDefined();
+  });
+
+  it('B8/F6: UI and scheduled scans keep separate checkpoints and never reconcile each other\'s unseen issues', async () => {
+    const issues = Array.from({ length: 150 }, (_, index) => makeRawIssue({}, `RS-${index + 1}`));
+    const { deps, store } = makeDeps(issues);
+    // A dashboard open registers the project and runs one UI chunk
+    // (100 of 150), leaving a UI checkpoint behind.
+    await getProjectDashboard(deps, { projectKey: 'RS' });
+    expect(await store.getRescanCheckpoint('RS', 'ui')).toBeDefined();
+    // The scheduled scan starts from its OWN checkpoint, completes
+    // both chunks, and reconciles against its own full seen set.
+    const scheduled = await handleScheduledRescan(deps);
+    expect(scheduled.errors).toEqual([]);
+    expect((await store.getProjectScores('RS')).length).toBe(150);
+    // The UI scan still has its own continuation available.
+    const continued = await continueScanProject(deps, { projectKey: 'RS' });
+    expect(continued.complete).toBe(true);
+    expect((await store.getProjectScores('RS')).length).toBe(150);
   });
 });

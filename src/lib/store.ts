@@ -97,6 +97,7 @@ export const memberKey = (projectKey: string, issueKey: string): string =>
 export const memberPrefix = (projectKey: string): string => `idx:${projectKey}:`;
 export const settingsKey = (projectKey: string): string => `settings:${projectKey}`;
 export const rescanKey = (projectKey: string): string => `rescan:${projectKey}`;
+export const uiRescanKey = (projectKey: string): string => `rescan-ui:${projectKey}`;
 export const scanStateKey = (projectKey: string): string => `scanstate:${projectKey}`;
 export const projectMarkerKey = (projectKey: string): string => `proj:${projectKey}`;
 export const PROJECTS_PREFIX = 'proj:';
@@ -364,16 +365,33 @@ export class ScoreStore {
     await this.kv.set(settingsKey(projectKey), settings);
   }
 
-  async getRescanCheckpoint(projectKey: string): Promise<RescanCheckpoint | undefined> {
-    return this.kv.get<RescanCheckpoint>(rescanKey(projectKey));
+  /**
+   * Scan checkpoints are namespaced by origin (war-room B8): UI chunks
+   * (asUser, never reconciling) write `rescan-ui:{project}`, while app
+   * scans (asApp, reconciling) keep `rescan:{project}`. Before this
+   * split, a nightly scan could resume from a checkpoint a restricted
+   * user's dashboard chunks had written and reconcile against a
+   * seen-set that never contained the issues that user could not see —
+   * deleting their records. Each origin now only ever resumes from
+   * its own checkpoints.
+   */
+  async getRescanCheckpoint(
+    projectKey: string,
+    scope: 'app' | 'ui' = 'app',
+  ): Promise<RescanCheckpoint | undefined> {
+    return this.kv.get<RescanCheckpoint>(scope === 'ui' ? uiRescanKey(projectKey) : rescanKey(projectKey));
   }
 
-  async setRescanCheckpoint(projectKey: string, checkpoint: RescanCheckpoint): Promise<void> {
-    await this.kv.set(rescanKey(projectKey), checkpoint);
+  async setRescanCheckpoint(
+    projectKey: string,
+    checkpoint: RescanCheckpoint,
+    scope: 'app' | 'ui' = 'app',
+  ): Promise<void> {
+    await this.kv.set(scope === 'ui' ? uiRescanKey(projectKey) : rescanKey(projectKey), checkpoint);
   }
 
-  async clearRescanCheckpoint(projectKey: string): Promise<void> {
-    await this.kv.delete(rescanKey(projectKey));
+  async clearRescanCheckpoint(projectKey: string, scope: 'app' | 'ui' = 'app'): Promise<void> {
+    await this.kv.delete(scope === 'ui' ? uiRescanKey(projectKey) : rescanKey(projectKey));
   }
 
   async getFieldMap(): Promise<JiraFieldMap | undefined> {
@@ -400,6 +418,12 @@ export class ScoreStore {
     await this.kv.set(draftKey(draft.issueKey, draft.contentHash), draft);
   }
 
+  /** Remove a consumed draft (war-room B22): an applied draft's hash is
+   *  stale by construction, and leaving it in KVS only orphans it. */
+  async deleteDraft(issueKey: string, contentHash: string): Promise<void> {
+    await this.kv.delete(draftKey(issueKey, contentHash));
+  }
+
   async getSummaryDraft(
     issueKey: string,
     contentHash: string,
@@ -409,6 +433,11 @@ export class ScoreStore {
 
   async saveSummaryDraft(draft: SummaryDraft): Promise<void> {
     await this.kv.set(summaryDraftKey(draft.issueKey, draft.contentHash), draft);
+  }
+
+  /** Remove a consumed summary draft (war-room B22, as deleteDraft). */
+  async deleteSummaryDraft(issueKey: string, contentHash: string): Promise<void> {
+    await this.kv.delete(summaryDraftKey(issueKey, contentHash));
   }
 
   /**

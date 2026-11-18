@@ -117,7 +117,17 @@ const AC_HEADING_TEXT_RE = /^acceptance criteria\b/i;
 function nodePlainText(node: AdfNode): string {
   const parts: string[] = [];
   nodeText(node, parts);
-  return parts.join('').replace(/\s+/g, ' ').trim();
+  // Block-internal line breaks are sentence boundaries (war-room
+  // B17): list items and hard breaks inside one node were glued into
+  // a single run-on line ("User can log in Error is shown"), which
+  // the summary deriver then served as one sentence. A break after
+  // sentence punctuation stays a space; any other break becomes a
+  // full stop.
+  return parts
+    .join('')
+    .replace(/([^.!?\s])[ \t]*\n[ \t]*(?=\S)/g, '$1. ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 /**

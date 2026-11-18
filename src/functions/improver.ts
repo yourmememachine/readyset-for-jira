@@ -87,6 +87,14 @@ export interface ApplyPayload {
   previousScore: number;
   newScore: number;
   source: DraftSource;
+  /**
+   * Set when the Jira write landed but a confirmation step after it
+   * (re-read, rescore, audit comment) failed (war-room B1). The apply
+   * SUCCEEDED — this is a warning, not an error, and the UI must not
+   * offer a retry of a write that already happened. When the rescore
+   * itself failed, `newScore` repeats `previousScore` (unconfirmed).
+   */
+  postWriteWarning?: string;
   /** Improve & Assign outcome (Wave 3): attempted only when requested. */
   assigned?: boolean;
   assignError?: string;
@@ -322,7 +330,11 @@ export async function improveIssue(
   }
   const mode = payload.mode ?? 'full';
   const { draft, fromCache } = await draftForIssue(deps, issue, settings, { mode });
-  const acSection = selectAcSection(draft.sections) ?? draft.sections[0];
+  // Selected by heading, never by position (war-room B2 hardening:
+  // the old `?? draft.sections[0]` fallback is gone — construction
+  // guarantees an AC-headed section in an ac-only draft, and a draft
+  // without one is corrupt, not a cue to project the wrong section).
+  const acSection = selectAcSection(draft.sections);
   return {
     issueKey: issue.key,
     canApply: await canUserEditIssues(deps, issue.projectKey),
@@ -391,7 +403,11 @@ export async function applyImprovement(
   // AC-only draft merges its section into the live description —
   // everything else the author wrote stays untouched.
   if (mode === 'ac-only') {
-    const acSection = selectAcSection(draft.sections) ?? draft.sections[0];
+    // By heading, never by position — and no positional fallback
+    // (war-room B2): a stored draft with no AC-headed section is
+    // corrupt; refuse it rather than merge whatever section is first
+    // into the description as if it were the criteria.
+    const acSection = selectAcSection(draft.sections);
     if (!acSection) throw new Error('The draft for this issue is no longer available. Run Improve again.');
     await deps.jira.updateDescription(
       payload.issueKey,
@@ -427,45 +443,68 @@ export async function applyImprovement(
     }
   }
 
-  // Rescore from the re-read issue so the reported jump — and the
-  // stored score the dashboard and Coach read — is the real one. A
-  // partial re-read throws here (after the write, before any store):
-  // the previous stored score is kept rather than replaced by a
-  // skeleton score, and the next event or scan heals the record.
-  const after = readCompleteIssue(await deps.jira.getIssue(payload.issueKey, fieldMap), fieldMap);
-  const record = await rescoreAfterWrite(deps, after, settings, fieldMap);
-
-  // Richer audit comment (Wave 2): name the checks that flipped, so
-  // the trail shows WHY the score moved, not just that it did.
-  const beforeById = new Map(current.checks.map((check) => [check.id, check.passed]));
-  const flippedToPass = record.checks
-    .filter((check) => check.passed && beforeById.get(check.id) === false)
-    .map((check) => check.label);
-  const flippedToFail = record.checks
-    .filter((check) => !check.passed && beforeById.get(check.id) === true)
-    .map((check) => check.label);
-  const commentParagraphs = [
-    mode === 'ac-only'
-      ? `Acceptance criteria improved with ReadySet — readiness ${current.score} → ${record.score}.`
-      : `Description improved with ReadySet — readiness ${current.score} → ${record.score}.`,
-  ];
-  if (flippedToPass.length > 0) {
-    commentParagraphs.push(`Now passing: ${flippedToPass.join('; ')}.`);
+  // The write has landed. Everything below is confirmation — the
+  // re-read, the rescore, the audit comment — and a failure there
+  // must never be reported as an Apply failure (war-room B1): the
+  // description HAS changed, and presenting a retryable error sends
+  // the user into a retry the stale-hash check will refuse (their
+  // own write changed the issue). Post-write failures therefore ride
+  // back as a warning on a successful result. A partial re-read
+  // still never stores a skeleton score: the previous stored score
+  // is kept, and the next event or scan heals the record.
+  let record: { score: number; checks: CheckResult[] } | null = null;
+  let postWriteWarning: string | undefined;
+  try {
+    const after = readCompleteIssue(await deps.jira.getIssue(payload.issueKey, fieldMap), fieldMap);
+    record = await rescoreAfterWrite(deps, after, settings, fieldMap);
+  } catch (err) {
+    console.error('ReadySet: post-apply rescore failed; the write itself landed:', err);
+    postWriteWarning =
+      'The description was updated, but ReadySet could not re-read the issue to confirm the new score. Reopen the issue to see it.';
   }
-  if (flippedToFail.length > 0) {
-    commentParagraphs.push(`No longer passing: ${flippedToFail.join('; ')}.`);
+  if (record) {
+    // Richer audit comment (Wave 2): name the checks that flipped, so
+    // the trail shows WHY the score moved, not just that it did.
+    const beforeById = new Map(current.checks.map((check) => [check.id, check.passed]));
+    const flippedToPass = record.checks
+      .filter((check) => check.passed && beforeById.get(check.id) === false)
+      .map((check) => check.label);
+    const flippedToFail = record.checks
+      .filter((check) => !check.passed && beforeById.get(check.id) === true)
+      .map((check) => check.label);
+    const commentParagraphs = [
+      mode === 'ac-only'
+        ? `Acceptance criteria improved with ReadySet — readiness ${current.score} → ${record.score}.`
+        : `Description improved with ReadySet — readiness ${current.score} → ${record.score}.`,
+    ];
+    if (flippedToPass.length > 0) {
+      commentParagraphs.push(`Now passing: ${flippedToPass.join('; ')}.`);
+    }
+    if (flippedToFail.length > 0) {
+      commentParagraphs.push(`No longer passing: ${flippedToFail.join('; ')}.`);
+    }
+    const comment = buildAdfFromSections([{ heading: '', paragraphs: commentParagraphs }]);
+    try {
+      await deps.jira.addComment(payload.issueKey, comment);
+    } catch (err) {
+      console.error('ReadySet: post-apply audit comment failed; the write itself landed:', err);
+      postWriteWarning =
+        'The description was updated and rescored, but the audit comment could not be posted.';
+    }
   }
-  const comment = buildAdfFromSections([{ heading: '', paragraphs: commentParagraphs }]);
-  await deps.jira.addComment(payload.issueKey, comment);
   if (settings.analyticsEnabled) {
     await deps.store.incrementAnalytics(issue.projectKey, 'applies', deps.now ? deps.now() : new Date());
   }
+  // The draft is consumed (war-room B22): its hash is stale by
+  // construction now, and leaving it in KVS only orphans it.
+  await deps.store.deleteDraft(payload.issueKey, payload.contentHash);
 
   return {
     issueKey: payload.issueKey,
     previousScore: current.score,
-    newScore: record.score,
+    newScore: record?.score ?? current.score,
     source: draft.source,
+    ...(postWriteWarning ? { postWriteWarning } : {}),
     ...(payload.assignToMe ? { assigned, assignError } : {}),
   };
 }
@@ -578,22 +617,43 @@ export async function applySummary(
     );
   }
   await deps.jira.updateSummary(payload.issueKey, draft.summary);
-  const after = readCompleteIssue(await deps.jira.getIssue(payload.issueKey, fieldMap), fieldMap);
-  const record = await rescoreAfterWrite(deps, after, settings, fieldMap);
-  const comment = buildAdfFromSections([
-    {
-      heading: '',
-      paragraphs: [`Summary improved with ReadySet — readiness ${current.score} → ${record.score}.`],
-    },
-  ]);
-  await deps.jira.addComment(payload.issueKey, comment);
+  // Post-write confirmation, guarded exactly as in applyImprovement
+  // (war-room B1): the summary HAS changed, so a re-read or comment
+  // failure returns success with a warning, never a retryable error.
+  let record: { score: number; checks: CheckResult[] } | null = null;
+  let postWriteWarning: string | undefined;
+  try {
+    const after = readCompleteIssue(await deps.jira.getIssue(payload.issueKey, fieldMap), fieldMap);
+    record = await rescoreAfterWrite(deps, after, settings, fieldMap);
+  } catch (err) {
+    console.error('ReadySet: post-apply rescore failed; the summary write itself landed:', err);
+    postWriteWarning =
+      'The summary was updated, but ReadySet could not re-read the issue to confirm the new score. Reopen the issue to see it.';
+  }
+  if (record) {
+    const comment = buildAdfFromSections([
+      {
+        heading: '',
+        paragraphs: [`Summary improved with ReadySet — readiness ${current.score} → ${record.score}.`],
+      },
+    ]);
+    try {
+      await deps.jira.addComment(payload.issueKey, comment);
+    } catch (err) {
+      console.error('ReadySet: post-apply audit comment failed; the summary write itself landed:', err);
+      postWriteWarning =
+        'The summary was updated and rescored, but the audit comment could not be posted.';
+    }
+  }
   if (settings.analyticsEnabled) {
     await deps.store.incrementAnalytics(issue.projectKey, 'applies', deps.now ? deps.now() : new Date());
   }
+  await deps.store.deleteSummaryDraft(payload.issueKey, payload.contentHash);
   return {
     issueKey: payload.issueKey,
     previousScore: current.score,
-    newScore: record.score,
+    newScore: record?.score ?? current.score,
     source: draft.source,
+    ...(postWriteWarning ? { postWriteWarning } : {}),
   };
 }

@@ -28,17 +28,34 @@ export const IMPROVER_MODEL = 'claude-haiku-4-5-20251001';
 /** Per-draft output cap from the design (≤ ~600 tokens). */
 const MAX_COMPLETION_TOKENS = 600;
 
+/**
+ * Hard ceiling on one LLM call (war-room B23): a hung `chat()` would
+ * otherwise ride out the whole 25 s UI invocation budget and die with
+ * it, taking the template fallback down too. Racing the call against
+ * this timeout turns a hang into an ordinary LLM failure, which the
+ * improver already falls back from.
+ */
+const LLM_TIMEOUT_MS = 20_000;
+
 export class ForgeLlmClient implements LlmClient {
   async draftDescription(request: DraftRequest): Promise<string> {
     const prompt = buildDraftPrompt(request);
-    const response = await chat({
-      model: IMPROVER_MODEL,
-      messages: [
-        { role: 'system', content: prompt.system },
-        { role: 'user', content: prompt.user },
-      ],
-      max_completion_tokens: MAX_COMPLETION_TOKENS,
-    });
+    const response = await Promise.race([
+      chat({
+        model: IMPROVER_MODEL,
+        messages: [
+          { role: 'system', content: prompt.system },
+          { role: 'user', content: prompt.user },
+        ],
+        max_completion_tokens: MAX_COMPLETION_TOKENS,
+      }),
+      new Promise<never>((_resolve, reject) => {
+        setTimeout(
+          () => reject(new Error(`ReadySet: Forge LLM call timed out after ${LLM_TIMEOUT_MS} ms`)),
+          LLM_TIMEOUT_MS,
+        );
+      }),
+    ]);
     const content = response.choices[0]?.message.content;
     const text =
       typeof content === 'string'

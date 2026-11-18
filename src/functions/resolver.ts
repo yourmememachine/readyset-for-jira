@@ -102,6 +102,21 @@ export interface ScanResult {
 const PAGE_SIZE = 100;
 const ADMIN_PERMISSION = 'ADMINISTER_PROJECTS';
 
+/**
+ * Project keys are interpolated into a quoted JQL string and written
+ * to the nightly-rescan roster, so payload-supplied keys are held to
+ * Jira's own key shape (war-room B11): an uppercase letter followed by
+ * uppercase letters, digits, or underscores. Anything else is refused
+ * before it can break out of the JQL quote or pollute the roster.
+ */
+const PROJECT_KEY_RE = /^[A-Z][A-Z0-9_]*$/;
+
+export function requireValidProjectKey(projectKey: string): void {
+  if (!PROJECT_KEY_RE.test(projectKey)) {
+    throw new Error(`ReadySet: invalid project key "${projectKey}"`);
+  }
+}
+
 function nowIso(deps: ResolverDeps): string {
   return (deps.now ? deps.now() : new Date()).toISOString();
 }
@@ -139,11 +154,12 @@ export function settingsFingerprint(
 }
 
 /**
- * Best-effort removal of an excluded issue's JQL entity property
- * (cross-review B4): the stored record going away is not enough —
- * the property is what JQL searches and the workflow validators
- * read. A failure is logged, never thrown: the record is already
- * deleted, and a later rescore/un-exclusion rewrites the property.
+ * Best-effort removal of an issue's JQL entity property (cross-review
+ * B4): the stored record going away is not enough — the property is
+ * what JQL searches and the workflow validators read. Used by the
+ * exclusion paths and by scan reconciliation (war-room A2). A failure
+ * is logged, never thrown: the record is already deleted, and a later
+ * rescore/un-exclusion rewrites the property.
  */
 export async function clearExcludedProperty(deps: ResolverDeps, issueKey: string): Promise<void> {
   try {
@@ -162,7 +178,19 @@ export async function getEffectiveFieldMap(deps: ResolverDeps): Promise<JiraFiel
   if (deps.fieldMap) return deps.fieldMap;
   const cached = await deps.store.getFieldMap();
   if (cached) return cached;
-  const resolved = resolveFieldMap(await deps.jira.listFields());
+  let fields;
+  try {
+    fields = await deps.jira.listFields();
+  } catch (err) {
+    // A failed field list must not take down every scoring path
+    // (war-room A4): degrade to the default ids — the behaviour
+    // resolveFieldMap already guarantees for an incomplete list —
+    // and do NOT cache the fallback, so the next call retries the
+    // real resolution.
+    console.error('ReadySet: could not list Jira fields; using the default field map:', err);
+    return DEFAULT_FIELD_MAP;
+  }
+  const resolved = resolveFieldMap(fields);
   await deps.store.setFieldMap(resolved);
   return resolved;
 }
@@ -231,21 +259,43 @@ export async function scoreAndStore(
   }
   const record = toStoredScore(issue, settings, fieldMap, source, deps.now ? deps.now() : new Date());
   const previous = await deps.store.getScore(record.issueKey);
+  // Entity property (upgrade pack, review #2): keep the JQL-searchable
+  // score in step with the stored record. Best-effort — a failed
+  // property write is logged and never fails the scoring path.
+  // The unchanged-score skip (upgrade cross-review B2/A5) is only
+  // sound when the previous write actually landed: the record tracks
+  // that as `propertySynced`, and an unsynced record is rewritten by
+  // every later rescore until the write lands (war-room A1/C2 — the
+  // skip previously made a single failed write permanent and falsified
+  // the "nightly rescan backfills" promise). With the skip, the
+  // property's updatedAt means "score last changed".
+  record.propertySynced = await syncScoreProperty(deps, record, settings, previous);
   await deps.store.saveScore(record);
   if (settings.analyticsEnabled) {
     await deps.store.incrementAnalytics(issue.projectKey, 'scores', deps.now ? deps.now() : new Date());
   }
-  // Entity property (upgrade pack, review #2): keep the JQL-searchable
-  // score in step with the stored record. Best-effort — a failed
-  // property write is logged and never fails the scoring path; the
-  // next rescore rewrites it. Skipped when score and grade are
-  // unchanged (upgrade cross-review B2/A5): scans and the nightly
-  // rescan rescore everything, and an unconditional serial PUT per
-  // issue would eat the invocation budget and Jira rate limits for
-  // no change in the searchable state. With the skip, the property's
-  // updatedAt means "score last changed".
-  if (previous && previous.score === record.score && previous.grade === record.grade) {
-    return record;
+  return record;
+}
+
+/**
+ * Write the `readyset` entity property for a record unless the
+ * previous record is already known to mirror it. Returns whether the
+ * property is now known to be in step — the caller persists that on
+ * the record, so a failure is retried by the next rescore instead of
+ * being skipped forever.
+ */
+export async function syncScoreProperty(
+  deps: ResolverDeps,
+  record: StoredScore,
+  settings: ProjectSettings,
+  previous: StoredScore | undefined,
+): Promise<boolean> {
+  if (
+    previous?.propertySynced === true &&
+    previous.score === record.score &&
+    previous.grade === record.grade
+  ) {
+    return true;
   }
   try {
     await deps.jira.setScoreProperty(record.issueKey, {
@@ -253,14 +303,15 @@ export async function scoreAndStore(
       grade: gradeForScore(record.score, settings),
       updatedAt: record.computedAt,
     });
+    return true;
   } catch (error) {
     console.warn(
       `ReadySet: score property write failed for ${record.issueKey}: ${
         error instanceof Error ? error.message : String(error)
       }`,
     );
+    return false;
   }
-  return record;
 }
 
 /** The panel payload for an excluded issue: no score, and the reason. */
@@ -362,6 +413,16 @@ export async function getIssuePanel(
     cached.issueUpdated === issue.updated &&
     cached.settingsFingerprint === settingsFingerprint(settings, fieldMap)
   ) {
+    if (cached.propertySynced !== true) {
+      // The cached record is fresh, but its entity property never
+      // landed (war-room A1, second barrier): serving from cache must
+      // not freeze the JQL mirror in its failed state — retry the
+      // write here, where the panel already pays a REST round trip.
+      const synced = await syncScoreProperty(deps, cached, settings, cached);
+      if (synced) {
+        await deps.store.saveScore({ ...cached, propertySynced: true });
+      }
+    }
     return panelPayload(cached, settings, true);
   }
   const record = await scoreAndStore(deps, issue, settings, fieldMap, 'rest');
@@ -385,11 +446,14 @@ async function runScanChunk(
   maxPages: number,
   fresh: boolean,
   reconcile: boolean,
+  checkpointScope: 'app' | 'ui',
 ): Promise<ScanResult> {
   const settings = await deps.store.getSettings(projectKey);
   const fieldMap = await getEffectiveFieldMap(deps);
-  if (fresh) await deps.store.clearRescanCheckpoint(projectKey);
-  const checkpoint = fresh ? undefined : await deps.store.getRescanCheckpoint(projectKey);
+  if (fresh) await deps.store.clearRescanCheckpoint(projectKey, checkpointScope);
+  const checkpoint = fresh
+    ? undefined
+    : await deps.store.getRescanCheckpoint(projectKey, checkpointScope);
   let token: string | null = checkpoint?.nextPageToken ?? null;
   const seen = new Set<string>(checkpoint?.seenKeys ?? []);
   let resumed =
@@ -400,7 +464,12 @@ async function runScanChunk(
   for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
     let page;
     try {
-      page = await adapter.searchIssues(projectScanJql(projectKey), token, PAGE_SIZE, fieldMap);
+      page = await adapter.searchIssues(
+        projectScanJql(projectKey, settings.donePolicy === 'include'),
+        token,
+        PAGE_SIZE,
+        fieldMap,
+      );
     } catch (err) {
       if (token !== null && !restartedAfterBadToken && err instanceof InvalidPageTokenError) {
         // The stored token was rejected (expired/rotated): tokens are
@@ -416,10 +485,14 @@ async function runScanChunk(
         pageIndex -= 1;
         continue;
       }
-      await deps.store.setRescanCheckpoint(projectKey, {
-        nextPageToken: token,
-        seenKeys: [...seen],
-      });
+      await deps.store.setRescanCheckpoint(
+        projectKey,
+        {
+          nextPageToken: token,
+          seenKeys: [...seen],
+        },
+        checkpointScope,
+      );
       await deps.store.setScanState(projectKey, {
         status: 'failed',
         updatedAt: nowIso(deps),
@@ -428,47 +501,95 @@ async function runScanChunk(
       throw err;
     }
     for (const raw of page.issues) {
-      if (!isScoreablePayload(raw)) {
-        // Never score a partial search payload over a good record
-        // (live RS-2 incident rule). The issue still counts as SEEN,
-        // so a reconciling scan does not delete its stored score —
-        // the record is stale, not wrong, and the next complete
-        // payload heals it.
-        console.error(
-          `ReadySet: scan of ${projectKey} skipped ${raw.key}: incomplete payload ` +
-            `(missing: ${missingScoringFields(raw, fieldMap).join(', ')})`,
+      try {
+        if (!isScoreablePayload(raw)) {
+          // Never score a partial search payload over a good record
+          // (live RS-2 incident rule). The issue still counts as SEEN,
+          // so a reconciling scan does not delete its stored score —
+          // the record is stale, not wrong, and the next complete
+          // payload heals it.
+          console.error(
+            `ReadySet: scan of ${projectKey} skipped ${raw.key}: incomplete payload ` +
+              `(missing: ${missingScoringFields(raw, fieldMap).join(', ')})`,
+          );
+          seen.add(raw.key);
+          continue;
+        }
+        const issue = normalizeIssue(raw, fieldMap);
+        const record = await scoreAndStore(deps, issue, settings, fieldMap, 'rest');
+        seen.add(issue.key);
+        if (record) scanned += 1;
+      } catch (err) {
+        // A failure inside the scoring loop is recorded exactly like
+        // a search failure (war-room A6): checkpoint what this scan
+        // has seen so far and mark the scan failed BEFORE the throw
+        // propagates — previously the dashboard's catch claimed the
+        // chunk "already recorded the failure" while the state sat at
+        // 'scanning' forever.
+        await deps.store.setRescanCheckpoint(
+          projectKey,
+          { nextPageToken: token, seenKeys: [...seen] },
+          checkpointScope,
         );
-        seen.add(raw.key);
-        continue;
+        await deps.store.setScanState(projectKey, {
+          status: 'failed',
+          updatedAt: nowIso(deps),
+          error: errMessage(err),
+        });
+        throw err;
       }
-      const issue = normalizeIssue(raw, fieldMap);
-      const record = await scoreAndStore(deps, issue, settings, fieldMap, 'rest');
-      seen.add(issue.key);
-      if (record) scanned += 1;
     }
-    if (page.isLast || !page.nextPageToken) {
+    if (page.isLast) {
       if (reconcile) {
         // Complete scan (isLast reached): anything stored for this
         // project that the scan did not see is closed, deleted, or
         // moved away — remove it (cross-review A2/B9). Never run this
-        // on a partial scan (B-NEW-1).
+        // on a partial scan (B-NEW-1). The entity property goes with
+        // the record (war-room A2): JQL and the workflow validators
+        // read the property, not KVS, so leaving it behind kept
+        // scoring an issue ReadySet no longer tracks.
         const existing = await deps.store.getProjectScores(projectKey);
         for (const record of existing) {
           if (!seen.has(record.issueKey)) {
             await deps.store.deleteScore(record.issueKey);
+            await clearExcludedProperty(deps, record.issueKey);
           }
         }
       }
-      await deps.store.clearRescanCheckpoint(projectKey);
+      await deps.store.clearRescanCheckpoint(projectKey, checkpointScope);
       await deps.store.setScanState(projectKey, { status: 'complete', updatedAt: nowIso(deps) });
       await deps.store.registerProject(projectKey);
       return { projectKey, scanned, resumed, complete: true };
     }
+    if (!page.nextPageToken) {
+      // Pagination ended without the termination signal (war-room
+      // A13): isLast is the contract's only "complete" marker, so a
+      // tokenless non-final page is a failed scan — never a complete
+      // one, and never a reason to reconcile a partial seen-set.
+      const err = new Error(
+        `ReadySet: scan of ${projectKey} ended without a final page marker`,
+      );
+      await deps.store.setRescanCheckpoint(
+        projectKey,
+        { nextPageToken: token, seenKeys: [...seen] },
+        checkpointScope,
+      );
+      await deps.store.setScanState(projectKey, {
+        status: 'failed',
+        updatedAt: nowIso(deps),
+        error: errMessage(err),
+      });
+      throw err;
+    }
     token = page.nextPageToken;
-    await deps.store.setRescanCheckpoint(projectKey, {
-      nextPageToken: token,
-      seenKeys: [...seen],
-    });
+    await deps.store.setRescanCheckpoint(
+      projectKey,
+      {
+        nextPageToken: token,
+        seenKeys: [...seen],
+      },
+      checkpointScope,
+    );
   }
   await deps.store.setScanState(projectKey, { status: 'scanning', updatedAt: nowIso(deps) });
   return { projectKey, scanned, resumed, complete: false };
@@ -488,7 +609,7 @@ export async function scanProject(
   let resumed = false;
   let fresh = !options.resume;
   for (let chunkCount = 0; chunkCount < 10_000; chunkCount += 1) {
-    const chunk = await runScanChunk(deps, deps.jira, projectKey, 1, fresh, true);
+    const chunk = await runScanChunk(deps, deps.jira, projectKey, 1, fresh, true, 'app');
     fresh = false;
     scanned += chunk.scanned;
     resumed = resumed || chunk.resumed;
@@ -509,11 +630,12 @@ export async function getProjectDashboard(
   payload: { projectKey: string },
 ): Promise<ProjectDashboardPayload> {
   const { projectKey } = payload;
+  requireValidProjectKey(projectKey);
   await deps.store.registerProject(projectKey);
   let state = await deps.store.getScanState(projectKey);
   if (!state || state.status !== 'complete') {
     try {
-      await runScanChunk(deps, deps.jiraUser ?? deps.jira, projectKey, 1, false, false);
+      await runScanChunk(deps, deps.jiraUser ?? deps.jira, projectKey, 1, false, false, 'ui');
     } catch {
       // The chunk already recorded the failure in the scan state; the
       // dashboard renders with the failure visible instead of throwing.
@@ -545,11 +667,12 @@ export async function rescanProject(
   deps: ResolverDeps,
   payload: { projectKey: string },
 ): Promise<ScanResult> {
+  requireValidProjectKey(payload.projectKey);
   await deps.store.setScanState(payload.projectKey, {
     status: 'scanning',
     updatedAt: nowIso(deps),
   });
-  return runScanChunk(deps, deps.jiraUser ?? deps.jira, payload.projectKey, 1, true, false);
+  return runScanChunk(deps, deps.jiraUser ?? deps.jira, payload.projectKey, 1, true, false, 'ui');
 }
 
 /** Continue an in-progress scan by one chunk (frontend-driven). */
@@ -557,7 +680,8 @@ export async function continueScanProject(
   deps: ResolverDeps,
   payload: { projectKey: string },
 ): Promise<ScanResult> {
-  return runScanChunk(deps, deps.jiraUser ?? deps.jira, payload.projectKey, 1, false, false);
+  requireValidProjectKey(payload.projectKey);
+  return runScanChunk(deps, deps.jiraUser ?? deps.jira, payload.projectKey, 1, false, false, 'ui');
 }
 
 export async function getSettings(
@@ -581,6 +705,7 @@ export async function saveSettings(
   if (!(await canAdminister(deps, payload.projectKey))) {
     throw new Error('Only project administrators can change ReadySet settings.');
   }
+  requireValidProjectKey(payload.projectKey);
   const current = await deps.store.getSettings(payload.projectKey);
   const next = normalizeSettings(payload.settings, current);
   await deps.store.saveSettings(payload.projectKey, next);

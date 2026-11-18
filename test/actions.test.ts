@@ -198,3 +198,44 @@ describe('Coach actions stay open-only under the Done policy (B9)', () => {
     expect(fixFirst.issues.map((issue) => issue.issueKey)).not.toContain('RS-4');
   });
 });
+
+describe('war-room fixes (2026-11-18)', () => {
+  it('B20: project readiness follows donePolicy include (fix-first stays open-only, per the B9 pin)', async () => {
+    const done = makeRawMessyIssue('RS-4');
+    done.fields.status = { name: 'Done', statusCategory: { key: 'done' } };
+    const { deps, store } = await makeSeededDeps([makeRawIssue(), makeRawIssueNoEstimate()]);
+    await scoreAndStore(
+      deps,
+      normalizeIssue(done, DEFAULT_FIELD_MAP),
+      DEFAULT_SETTINGS,
+      DEFAULT_FIELD_MAP,
+      'event',
+    );
+    await store.saveSettings('RS', { ...DEFAULT_SETTINGS, donePolicy: 'include' });
+    const readiness = await fetchProjectReadiness(deps, { projectKey: 'RS' });
+    expect(readiness.totalScored).toBe(3);
+  });
+
+  it('B21: compare reports a check that exists on only one issue when that side fails it', async () => {
+    const bug = makeRawMessyIssue('RS-4');
+    bug.fields.issuetype = { name: 'Bug' };
+    const { deps } = await makeSeededDeps([makeRawIssue()]);
+    await scoreAndStore(
+      deps,
+      normalizeIssue(bug, DEFAULT_FIELD_MAP),
+      DEFAULT_SETTINGS,
+      DEFAULT_FIELD_MAP,
+      'event',
+    );
+    const result = await fetchCompareIssues(deps, { issueKeyA: 'RS-1', issueKeyB: 'RS-4' });
+    expect(result.found).toBe(true);
+    const repro = (result.differences ?? []).find(
+      (diff) => diff.label === 'Steps to reproduce documented',
+    );
+    expect(repro).toBeDefined();
+    // RS-1 is a Story: the check does not apply there (reported as
+    // not failing); the Bug fails it, and that explains the gap.
+    expect(repro?.aPassed).toBe(true);
+    expect(repro?.bPassed).toBe(false);
+  });
+});

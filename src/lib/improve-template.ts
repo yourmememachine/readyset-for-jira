@@ -45,7 +45,8 @@ function cleanLines(text: string): string[] {
 
 /** Text worth preserving: at least a short sentence of real content. */
 function isMeaningful(text: string): boolean {
-  return text.replace(/[^a-z0-9]+/gi, '').length >= 20;
+  // Unicode letters/digits, as in the rubric (war-room B14).
+  return text.replace(/[^\p{L}\p{N}]+/gu, '').length >= 20;
 }
 
 function ensureSentence(text: string): string {
@@ -138,6 +139,41 @@ function buildAcceptanceCriteria(
   };
 }
 
+/**
+ * Steps-to-reproduce section for a bug whose repro check fails
+ * (war-room C3): a bug's denominator carries the extra repro check,
+ * and a draft that never addresses it caps a bare bug at 55 — Improve
+ * could not lift it to Almost. Built under the template's standing
+ * no-invention rule: steps come from the issue's own sentences, the
+ * Actual line quotes what the issue itself reports (its summary),
+ * and the Expected line points at the draft's own criteria rather
+ * than inventing behaviour. When the issue carries no usable text,
+ * the single step is encountering the reported problem itself.
+ */
+function buildReproSection(issue: NormalizedIssue, contextLines: string[]): DraftSection {
+  const steps = sentencesOf(contextLines.join('\n')).slice(0, 3);
+  const summary = cleanLine(issue.summary);
+  const paragraphs: string[] = [];
+  if (steps.length > 0) {
+    steps.forEach((step, index) => {
+      paragraphs.push(`${index + 1}. ${ensureSentence(step)}`);
+    });
+  } else {
+    paragraphs.push(
+      summary.length > 0
+        ? `1. Encounter the problem this issue reports: "${summary}".`
+        : '1. Encounter the problem described in this issue.',
+    );
+  }
+  paragraphs.push(
+    'Expected: the behaviour described in the acceptance criteria above.',
+    summary.length > 0
+      ? `Actual: ${ensureSentence(summary)} As reported in this issue.`
+      : 'Actual: the problem described in this issue, as reported.',
+  );
+  return { heading: 'Steps to reproduce', paragraphs };
+}
+
 function buildDefinitionOfDone(failedChecks: CheckResult[], heading: string): DraftSection {
   const failed = new Set(failedChecks.map((check) => check.id));
   const paragraphs = [
@@ -216,6 +252,13 @@ export function buildTemplateDraft(
     } else if (kind === 'done') {
       sections.push(buildDefinitionOfDone(failedChecks, name));
     }
+  }
+  // Bug pack (war-room C3): a bug failing repro-steps gets its repro
+  // section appended — it is not part of the configured structure
+  // (stories never see it), it is the draft addressing a failing
+  // check the configured sections cannot express.
+  if (failedChecks.some((check) => check.id === 'repro-steps')) {
+    sections.push(buildReproSection(issue, contextLines));
   }
   return sections;
 }

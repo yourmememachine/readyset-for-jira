@@ -696,3 +696,137 @@ describe('Summary Improve (Wave 3)', () => {
     expect(second.currentScore).toBe(22);
   });
 });
+
+describe('war-room fixes (2026-11-18)', () => {
+  const throwingLlm = new FakeLlmClient(() => {
+    throw new Error('LLM unavailable');
+  });
+
+  it('F9/C3: a bare Bug gets a reproduction-steps section built from its own text and can reach 60', async () => {
+    const bug = makeRawMessyIssue('RS-7');
+    bug.fields.issuetype = { name: 'Bug' };
+    const { deps } = makeImproverDeps([bug], throwingLlm);
+    const payload = await improveIssue(deps, { issueKey: 'RS-7' });
+    expect(payload.source).toBe('template');
+    expect(payload.currentScore).toBe(18);
+    expect(payload.sections.map((section) => section.heading)).toContain('Steps to reproduce');
+    expect(payload.projectedScore).toBeGreaterThanOrEqual(60);
+  });
+
+  it('F11: an LLM draft containing a placeholder is rejected and the template takes over', async () => {
+    const llm = new FakeLlmClient(() => GOOD_MARKDOWN.replace('token-bucket', 'TBD'));
+    const { deps } = makeImproverDeps([makeRawMessyIssue()], llm);
+    const payload = await improveIssue(deps, { issueKey: 'RS-3' });
+    expect(payload.source).toBe('template');
+    expect(payload.projectedScore).toBe(60);
+  });
+
+  it('B22: a successful Apply consumes the stored draft', async () => {
+    const { deps, store } = makeImproverDeps([makeRawMessyIssue()], throwingLlm);
+    const draft = await improveIssue(deps, { issueKey: 'RS-3' });
+    expect(await store.getDraft('RS-3', draft.contentHash)).toBeDefined();
+    await applyImprovement(deps, { issueKey: 'RS-3', contentHash: draft.contentHash });
+    expect(await store.getDraft('RS-3', draft.contentHash)).toBeUndefined();
+  });
+
+  it('B2: an ac-only Apply refuses a draft whose criteria section is gone instead of writing another section', async () => {
+    const raw = makeRawMessyIssue('RS-3');
+    raw.fields.summary = 'Gateway limiter';
+    raw.fields.description = buildAdfFromSections([
+      {
+        heading: 'Goal',
+        paragraphs: [
+          'Add token-bucket rate limiting to the public API gateway so a single noisy integration cannot degrade latency for every other merchant using the platform, with per-key quotas and clear rejection signals.',
+        ],
+      },
+      { heading: 'Notes', paragraphs: ['Roll out behind a feature flag first.'] },
+    ]);
+    const llm = new FakeLlmClient(() =>
+      [
+        '## Acceptance criteria',
+        '- Requests beyond quota return HTTP 429 with a Retry-After header.',
+        '- Quota is configurable per API key without a deploy.',
+      ].join('\n'),
+    );
+    const { deps, jira, store } = makeImproverDeps([raw], llm);
+    const draft = await improveIssue(deps, { issueKey: 'RS-3', mode: 'ac-only' });
+    // Corrupt the stored draft: its only section is no longer the
+    // criteria section. The old code fell back to sections[0] and
+    // would have merged "Goal" in as the acceptance criteria.
+    const stored = await store.getDraft('RS-3', draft.contentHash);
+    if (!stored) throw new Error('draft missing');
+    await store.saveDraft({
+      ...stored,
+      sections: [{ heading: 'Goal', paragraphs: ['Overwrite the goal with this text.'] }],
+    });
+    await expect(
+      applyImprovement(deps, { issueKey: 'RS-3', contentHash: draft.contentHash }),
+    ).rejects.toThrow(/no longer available/);
+    expect(jira.updateDescriptionCalls).toHaveLength(0);
+  });
+
+  it('F7/B1: a post-write re-read failure returns success with a warning, never a retryable error', async () => {
+    class PostWriteFailJira extends FakeJiraAdapter {
+      private reads = 0;
+      override async getIssue(issueKey: string) {
+        this.reads += 1;
+        if (this.reads >= 3) throw new Error('read-back failed');
+        return super.getIssue(issueKey);
+      }
+    }
+    const jira = new PostWriteFailJira([makeRawMessyIssue()]);
+    const store = new ScoreStore(new InMemoryKV());
+    const deps: ImproverDeps = { jira, store, llm: throwingLlm, now: () => FIXED_NOW };
+    const draft = await improveIssue(deps, { issueKey: 'RS-3' });
+    const applied = await applyImprovement(deps, {
+      issueKey: 'RS-3',
+      contentHash: draft.contentHash,
+    });
+    // The write landed exactly once; the score is reported as the
+    // pre-Apply score (unconfirmed) with an honest warning attached.
+    expect(jira.updateDescriptionCalls).toHaveLength(1);
+    expect(applied.previousScore).toBe(20);
+    expect(applied.newScore).toBe(20);
+    expect(applied.postWriteWarning).toMatch(/could not re-read/);
+    expect(await store.getDraft('RS-3', draft.contentHash)).toBeUndefined();
+  });
+
+  it('F7/B1: a failed audit comment returns the real new score with a warning', async () => {
+    class CommentFailJira extends FakeJiraAdapter {
+      override async addComment(): Promise<void> {
+        throw new Error('comment failed');
+      }
+    }
+    const jira = new CommentFailJira([makeRawMessyIssue()]);
+    const store = new ScoreStore(new InMemoryKV());
+    const deps: ImproverDeps = { jira, store, llm: throwingLlm, now: () => FIXED_NOW };
+    const draft = await improveIssue(deps, { issueKey: 'RS-3' });
+    const applied = await applyImprovement(deps, {
+      issueKey: 'RS-3',
+      contentHash: draft.contentHash,
+    });
+    expect(applied.newScore).toBe(60);
+    expect(applied.postWriteWarning).toMatch(/audit comment/);
+  });
+
+  it('F7/B1: the summary Apply path guards its post-write steps the same way', async () => {
+    class CommentFailJira extends FakeJiraAdapter {
+      override async addComment(): Promise<void> {
+        throw new Error('comment failed');
+      }
+    }
+    const jira = new CommentFailJira([makeRawMessyIssue()]);
+    const store = new ScoreStore(new InMemoryKV());
+    const llm = new FakeLlmClient((request) =>
+      request.kind === 'summary'
+        ? 'Add token-bucket rate limiting to the public API gateway'
+        : GOOD_MARKDOWN,
+    );
+    const deps: ImproverDeps = { jira, store, llm, now: () => FIXED_NOW };
+    const draft = await improveSummary(deps, { issueKey: 'RS-3' });
+    const applied = await applySummary(deps, { issueKey: 'RS-3', contentHash: draft.contentHash });
+    expect(jira.updateSummaryCalls).toHaveLength(1);
+    expect(applied.postWriteWarning).toMatch(/audit comment/);
+    expect(await store.getSummaryDraft('RS-3', draft.contentHash)).toBeUndefined();
+  });
+});

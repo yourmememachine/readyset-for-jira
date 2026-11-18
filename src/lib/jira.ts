@@ -126,7 +126,15 @@ export interface JiraAdapter {
  * instead of breaking.
  */
 export function resolveFieldMap(fields: JiraFieldInfo[]): JiraFieldMap {
-  const byName = new Map(fields.map((field) => [field.name.trim().toLowerCase(), field.id]));
+  // First occurrence wins on duplicate names (war-room B10): a Map
+  // built straight from the list silently let a later duplicate-named
+  // field (an admin-created second "Story Points") overwrite the real
+  // one, permanently mis-scoring the site.
+  const byName = new Map<string, string>();
+  for (const field of fields) {
+    const name = field.name.trim().toLowerCase();
+    if (!byName.has(name)) byName.set(name, field.id);
+  }
   const pick = (names: string[], fallback: string | null): string | null => {
     for (const name of names) {
       const id = byName.get(name);
@@ -336,9 +344,17 @@ export function normalizeIssue(
   };
 }
 
-/** Open issues of a project, in stable key order for checkpointed scans. */
-export function projectScanJql(projectKey: string): string {
-  return `project = "${projectKey}" AND statusCategory != Done ORDER BY key ASC`;
+/**
+ * Issues of a project in stable key order for checkpointed scans.
+ * Done issues are excluded unless the project's Done policy counts
+ * them (war-room A3): a scan that never returns Done issues also
+ * never *sees* them, so reconciliation deleted their records nightly
+ * and the `include` policy could never survive a scan.
+ */
+export function projectScanJql(projectKey: string, includeDone = false): string {
+  return includeDone
+    ? `project = "${projectKey}" ORDER BY key ASC`
+    : `project = "${projectKey}" AND statusCategory != Done ORDER BY key ASC`;
 }
 
 const FAKE_TOKEN_PREFIX = 'pg:';

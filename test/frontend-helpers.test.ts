@@ -230,3 +230,25 @@ describe('diffSections (Wave 3 diff view)', () => {
     ]);
   });
 });
+
+describe('war-room frontend fixes (2026-11-18)', () => {
+  it('C4: the summary not-enough-text refusal passes through verbatim instead of a retry offer', () => {
+    const message = toImproveMessage(
+      new Error(
+        'There is not enough text in this issue to suggest a better summary. Add a description first.',
+      ),
+    );
+    expect(message).toMatch(/not enough text/);
+    expect(message).toMatch(/Add a description first/);
+    expect(message).not.toMatch(/Something went wrong/);
+  });
+
+  it('B1: a post-write warning rides on the applied state as its message', () => {
+    const applied = applyLoaded(beginApply(reviewState()), {
+      ...APPLIED,
+      postWriteWarning: 'The description was updated, but the audit comment could not be posted.',
+    });
+    expect(applied.phase).toBe('applied');
+    expect(applied.message).toMatch(/audit comment/);
+  });
+});

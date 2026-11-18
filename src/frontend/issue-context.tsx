@@ -50,6 +50,7 @@ import {
   draftSourceLabel,
   formatScoreChange,
   initialImproveState,
+  isStaleDraftError,
   toImproveMessage,
   type ImproveFlowState,
   type SectionDiffStatus,
@@ -183,7 +184,13 @@ function ImproveSection({
               ) : null}
               {acOnly ? (
                 <Text>Only this section changes — everything else in the description stays exactly as it is.</Text>
-              ) : null}
+              ) : (
+                <Text>
+                  Applying replaces the description with this structured text — tables,
+                  code blocks, and mentions in the current description are not carried
+                  over.
+                </Text>
+              )}
               {draft.sections.map((section, index) => (
                 <Box key={`${section.heading}-${index}`}>
                   {section.heading ? (
@@ -245,6 +252,11 @@ function ImproveSection({
                 : ''}
             </Text>
           </SectionMessage>
+          {state.message ? (
+            <SectionMessage title="Applied with a warning" appearance="warning">
+              <Text>{state.message}</Text>
+            </SectionMessage>
+          ) : null}
           <Inline space="space.100">
             <Button onClick={() => void runImprove('full')}>Improve again</Button>
             <Button onClick={() => setState((current) => discardDraft(current))}>
@@ -328,7 +340,16 @@ function SummaryImproveSection({
       onApplied();
     } catch (err) {
       setMessage(toImproveMessage(err));
-      setPhase('review');
+      // A stale draft is dead, exactly as in the main Improve flow
+      // (war-room B13): clear it and land on the error phase instead
+      // of returning to review with a draft that can only ever fail
+      // the same way again.
+      if (isStaleDraftError(err)) {
+        setDraft(null);
+        setPhase('error');
+      } else {
+        setPhase('review');
+      }
     }
   };
 
@@ -397,6 +418,11 @@ function SummaryImproveSection({
               records the change.
             </Text>
           </SectionMessage>
+          {result?.postWriteWarning ? (
+            <SectionMessage title="Applied with a warning" appearance="warning">
+              <Text>{result.postWriteWarning}</Text>
+            </SectionMessage>
+          ) : null}
           <Inline space="space.100">
             <Button onClick={() => setPhase('idle')}>Dismiss</Button>
           </Inline>
@@ -555,7 +581,8 @@ function IssueContextApp() {
                 <Text weight="bold">{check.label}</Text>
                 <Text>({check.weight} pts)</Text>
               </Inline>
-              <Text>{check.passed ? check.detail : check.fixHint}</Text>
+              <Text>{check.detail}</Text>
+              {!check.passed && check.fixHint ? <Text>{check.fixHint}</Text> : null}
             </Box>
           ))}
         </Stack>

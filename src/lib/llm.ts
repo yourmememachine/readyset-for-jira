@@ -10,6 +10,7 @@
  * failure the caller falls back to the deterministic template).
  */
 import type { DraftSection } from './adf';
+import { containsPlaceholder } from './rubric';
 import { DEFAULT_IMPROVE_SECTIONS } from './rubric-config';
 import type { CheckResult, NormalizedIssue } from './types';
 
@@ -43,6 +44,20 @@ export interface LlmClient {
 /** The default section headings (project settings can override). */
 export const DRAFT_HEADINGS = DEFAULT_IMPROVE_SECTIONS;
 
+/**
+ * Cap on issue text interpolated into a prompt (war-room B23): a
+ * near-limit Jira description sent whole wastes tokens and can push
+ * the call over its context; the draft targets the issue's opening
+ * and its failed checks, both preserved by head-truncation.
+ */
+const MAX_PROMPT_TEXT_CHARS = 8000;
+
+function promptText(text: string): string {
+  return text.length > MAX_PROMPT_TEXT_CHARS
+    ? `${text.slice(0, MAX_PROMPT_TEXT_CHARS)}\n[truncated]`
+    : text;
+}
+
 export function buildDraftPrompt(request: DraftRequest): { system: string; user: string } {
   const { issue, failedChecks } = request;
   const headings = request.sections && request.sections.length > 0 ? request.sections : DRAFT_HEADINGS;
@@ -61,7 +76,7 @@ export function buildDraftPrompt(request: DraftRequest): { system: string; user:
         `Current summary: ${issue.summary}`,
         '',
         'Current description:',
-        issue.descriptionText.trim().length > 0 ? issue.descriptionText : '(empty)',
+        issue.descriptionText.trim().length > 0 ? promptText(issue.descriptionText) : '(empty)',
       ].join('\n'),
     };
   }
@@ -82,7 +97,7 @@ export function buildDraftPrompt(request: DraftRequest): { system: string; user:
         `Issue: ${issue.key} — ${issue.summary}`,
         '',
         'Current description:',
-        issue.descriptionText.trim().length > 0 ? issue.descriptionText : '(empty)',
+        issue.descriptionText.trim().length > 0 ? promptText(issue.descriptionText) : '(empty)',
       ].join('\n'),
     };
   }
@@ -101,10 +116,10 @@ export function buildDraftPrompt(request: DraftRequest): { system: string; user:
     `Issue: ${issue.key} — ${issue.summary}`,
     '',
     'Current description:',
-    issue.descriptionText.trim().length > 0 ? issue.descriptionText : '(empty)',
+    issue.descriptionText.trim().length > 0 ? promptText(issue.descriptionText) : '(empty)',
   ];
   if (issue.acceptanceCriteriaText && issue.acceptanceCriteriaText.trim().length > 0) {
-    lines.push('', 'Dedicated acceptance-criteria field:', issue.acceptanceCriteriaText);
+    lines.push('', 'Dedicated acceptance-criteria field:', promptText(issue.acceptanceCriteriaText));
   }
   if (failedChecks.length > 0) {
     lines.push(
@@ -164,6 +179,10 @@ export function parseDraftMarkdown(
     body = [];
   };
   for (const line of markdown.split('\n')) {
+    // Code fences are container, not content (war-room B3): a reply
+    // wrapped in ```markdown would otherwise write the fence lines
+    // into the Jira description on Apply.
+    if (/^\s*```/.test(line)) continue;
     const headingMatch = line.match(/^##\s+(.+?)\s*$/);
     if (headingMatch) {
       flushSection();
@@ -184,15 +203,30 @@ export function parseDraftMarkdown(
       sum + section.paragraphs.reduce((inner, paragraph) => inner + paragraph.length, 0),
     0,
   );
-  if (sections.length === 0 || totalChars < 40) {
+  // The usable-content floor scales with the contract (war-room B5):
+  // the full-draft 40 chars would discard a valid short AC-only reply
+  // ("Login succeeds" is a complete criterion).
+  const minChars = expectedSections.length <= 1 ? 10 : 40;
+  if (sections.length === 0 || totalChars < minChars) {
     throw new Error('ReadySet: LLM draft reply had no usable content');
+  }
+  // No placeholder markers in a draft (war-room C5): a draft carrying
+  // "TBD" would fail the no-placeholders check the moment it is
+  // applied — the summary parser already scans for exactly this; the
+  // template path strips markers instead of emitting them.
+  for (const section of sections) {
+    for (const paragraph of section.paragraphs) {
+      if (containsPlaceholder(paragraph)) {
+        throw new Error('ReadySet: LLM draft reply contains a placeholder marker');
+      }
+    }
   }
   const acHeading = expectedSections.find((name) => /acceptance criteria/i.test(name));
   const hasAcceptanceCriteria = sections.some(
     (section) =>
       section.paragraphs.length > 0 &&
       (acHeading
-        ? section.heading.trim().toLowerCase() === acHeading.trim().toLowerCase()
+        ? normalizeHeadingKey(section.heading) === normalizeHeadingKey(acHeading)
         : /acceptance criteria/i.test(section.heading)),
   );
   if (!hasAcceptanceCriteria) {
@@ -203,14 +237,30 @@ export function parseDraftMarkdown(
   // configured section would apply a shape nobody chose. Extra sections
   // and ordering are tolerated — the projected score is computed by the
   // real rubric over whatever is applied, so nothing hides.
-  const present = new Set(sections.map((section) => section.heading.trim().toLowerCase()));
-  const missing = expectedSections.filter((name) => !present.has(name.trim().toLowerCase()));
+  const present = new Set(sections.map((section) => normalizeHeadingKey(section.heading)));
+  const missing = expectedSections.filter((name) => !present.has(normalizeHeadingKey(name)));
   if (missing.length > 0) {
     throw new Error(
       `ReadySet: LLM draft reply is missing configured section(s): ${missing.join(', ')}`,
     );
   }
   return sections;
+}
+
+/**
+ * Heading comparison key (war-room B4): models decorate headings —
+ * "Acceptance criteria:", "1. Goal", "**Goal**" — and exact-string
+ * matching silently killed every such draft, forcing permanent
+ * template fallback for that model behaviour. Decoration is stripped
+ * for COMPARISON only; the draft keeps the model's own heading text.
+ */
+function normalizeHeadingKey(name: string): string {
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/^\d+[.)]\s*/, '')
+    .replace(/\*/g, '')
+    .replace(/[:\s]+$/, '');
 }
 
 const SUMMARY_PLACEHOLDER_RE = /\b(tbd|todo|fixme|placeholder)\b/i;
@@ -238,6 +288,13 @@ export function parseSummaryReply(reply: string): string {
         .trim()
         .replace(/^#+\s*/, '')
         .replace(/^["']|["']$/g, '')
+        .trim()
+        // Bullet and bold dressing (war-room B12): "- **Summary:** …"
+        // survived every strip above and was written to the issue
+        // summary verbatim. Bold markers in a one-line summary are
+        // never content.
+        .replace(/^[-*•]\s+/, '')
+        .replace(/\*\*/g, '')
         .trim()
         .replace(SUMMARY_LABEL_RE, '')
         .trim(),
