@@ -43,7 +43,9 @@ export function computeProjectStats(
   worstLimit = 25,
   now: Date = new Date(),
 ): ProjectStats {
-  const open = records.filter(isOpen);
+  // Done policy (Wave 3): 'exclude' counts open issues only (the
+  // original behaviour); 'include' counts every scored record.
+  const open = settings.donePolicy === 'include' ? [...records] : records.filter(isOpen);
   const counts: Record<Grade, number> = { ready: 0, almost: 0, 'not-ready': 0 };
   let sum = 0;
   for (const record of open) {

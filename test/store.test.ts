@@ -295,3 +295,37 @@ describe('normalizeImproveSections (Wave 2 cross-review)', () => {
     expect(merged).toEqual(['Goal', 'Acceptance criteria (done when)', 'Notes']);
   });
 });
+
+describe('normalizeSettings Wave 3 fields', () => {
+  it('defaults exclusions to empty, Done policy to exclude, analytics to off', () => {
+    const merged = normalizeSettings({}, DEFAULT_SETTINGS);
+    expect(merged.excludedIssueTypes).toEqual([]);
+    expect(merged.excludedStatuses).toEqual([]);
+    expect(merged.donePolicy).toBe('exclude');
+    expect(merged.analyticsEnabled).toBe(false);
+  });
+
+  it('normalizes exclusion lists: trims, dedupes case-insensitively, drops junk', () => {
+    const merged = normalizeSettings(
+      {
+        excludedIssueTypes: [' Bug ', 'bug', '', 'x'.repeat(41), 'Task'],
+        excludedStatuses: ['Done'],
+        donePolicy: 'include',
+        analyticsEnabled: true,
+      },
+      DEFAULT_SETTINGS,
+    );
+    expect(merged.excludedIssueTypes).toEqual(['Bug', 'Task']);
+    expect(merged.excludedStatuses).toEqual(['Done']);
+    expect(merged.donePolicy).toBe('include');
+    expect(merged.analyticsEnabled).toBe(true);
+  });
+
+  it('an unknown Done policy value falls back to exclude', () => {
+    const merged = normalizeSettings(
+      { donePolicy: 'sometimes' as never },
+      DEFAULT_SETTINGS,
+    );
+    expect(merged.donePolicy).toBe('exclude');
+  });
+});

@@ -284,7 +284,7 @@ describe('getIssuePanel', () => {
       DEFAULT_FIELD_MAP,
       'event',
     );
-    expect(corrupt.score).toBe(35);
+    expect(corrupt?.score).toBe(35);
 
     const panel = await getIssuePanel(deps, { issueKey: 'RS-2' });
     expect(panel.score).toBe(100);

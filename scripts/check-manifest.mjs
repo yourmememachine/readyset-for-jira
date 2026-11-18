@@ -87,8 +87,20 @@ check(
   `Coach actions must all be actionVerb: GET (found ${getVerbs.length})`,
 );
 
-const agentBlock = moduleBlock('rovo:agent');
-check(agentBlock.includes('key: readyset-coach'), 'rovo:agent readyset-coach is missing');
+const validatorBlock = moduleBlock('jira:workflowValidator');
+for (const key of ['readyset-require-almost', 'readyset-require-ready']) {
+  check(validatorBlock.includes(`key: ${key}`), `workflow validator is missing ${key}`);
+}
+check(
+  validatorBlock.includes('issue.properties.readyset'),
+  'workflow validators must read the readyset entity property',
+);
+check(
+  (validatorBlock.match(/errorMessage:/g) ?? []).length === 2,
+  'each workflow validator needs an errorMessage',
+);
+
+const agentBlock = moduleBlock('rovo:agent');check(agentBlock.includes('key: readyset-coach'), 'rovo:agent readyset-coach is missing');
 for (const key of ACTION_KEYS) {
   check(agentBlock.includes(`- ${key}`), `rovo:agent does not wire action ${key}`);
 }

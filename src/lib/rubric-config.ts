@@ -194,6 +194,10 @@ export const DEFAULT_SETTINGS: ProjectSettings = {
   },
   weights: { ...CHECK_WEIGHTS },
   improveSections: [...DEFAULT_IMPROVE_SECTIONS],
+  excludedIssueTypes: [],
+  excludedStatuses: [],
+  donePolicy: 'exclude',
+  analyticsEnabled: false,
 };
 
 /** Every check id, in rubric order (settings UI + normalization). */

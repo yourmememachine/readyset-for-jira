@@ -143,6 +143,24 @@ function clampThreshold(value: unknown, fallback: number): number {
  * read path and the save path so the two can never disagree
  * (cross-review A10).
  */
+/** Trim, dedupe (case-insensitive), and cap a free-text list setting (Wave 3). */
+export function normalizeStringList(input: unknown, base: string[]): string[] {
+  if (!Array.isArray(input)) return [...base];
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const candidate of input) {
+    if (typeof candidate !== 'string') continue;
+    const value = candidate.trim();
+    if (value.length === 0 || value.length > 40) continue;
+    const key = value.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(value);
+    if (result.length >= 12) break;
+  }
+  return result;
+}
+
 export function normalizeSettings(
   input: Partial<ProjectSettings> | undefined,
   base: ProjectSettings,
@@ -178,6 +196,10 @@ export function normalizeSettings(
     checksEnabled,
     weights,
     improveSections: normalizeImproveSections(input?.improveSections, base.improveSections),
+    excludedIssueTypes: normalizeStringList(input?.excludedIssueTypes, base.excludedIssueTypes),
+    excludedStatuses: normalizeStringList(input?.excludedStatuses, base.excludedStatuses),
+    donePolicy: input?.donePolicy === 'include' ? 'include' : 'exclude',
+    analyticsEnabled: input?.analyticsEnabled === true,
   };
 }
 
@@ -386,4 +408,51 @@ export class ScoreStore {
   async saveSummaryDraft(draft: SummaryDraft): Promise<void> {
     await this.kv.set(summaryDraftKey(draft.issueKey, draft.contentHash), draft);
   }
+
+  /**
+   * Opt-in analytics (Wave 3): increment one daily counter for the
+   * project. Callers gate on settings.analyticsEnabled — the counters
+   * exist only when the project admin turned them on.
+   */
+  async incrementAnalytics(
+    projectKey: string,
+    field: AnalyticsField,
+    now: Date,
+  ): Promise<void> {
+    const key = analyticsKey(projectKey, now);
+    const current = (await this.kv.get<AnalyticsDay>(key)) ?? { scores: 0, drafts: 0, applies: 0 };
+    current[field] += 1;
+    await this.kv.set(key, current);
+  }
+
+  /** Sum the last `days` daily counters (including today) for the dashboard. */
+  async getAnalyticsTotals(
+    projectKey: string,
+    days: number,
+    now: Date,
+  ): Promise<{ scores: number; drafts: number; applies: number }> {
+    const totals = { scores: 0, drafts: 0, applies: 0 };
+    for (let offset = 0; offset < days; offset += 1) {
+      const day = new Date(now.getTime() - offset * 24 * 60 * 60 * 1000);
+      const entry = await this.kv.get<AnalyticsDay>(analyticsKey(projectKey, day));
+      if (entry) {
+        totals.scores += entry.scores;
+        totals.drafts += entry.drafts;
+        totals.applies += entry.applies;
+      }
+    }
+    return totals;
+  }
 }
+
+/** One day of opt-in usage counters (Wave 3). */
+export interface AnalyticsDay {
+  scores: number;
+  drafts: number;
+  applies: number;
+}
+
+export type AnalyticsField = keyof AnalyticsDay;
+
+export const analyticsKey = (projectKey: string, day: Date): string =>
+  `analytics:${projectKey}:${day.toISOString().slice(0, 10)}`;

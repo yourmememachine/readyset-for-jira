@@ -495,6 +495,25 @@ function IssueContextApp() {
   const nextFix = nextFixFor(data.checks);
   const nextFixProjected = nextFix ? projectedScoreIfFixed(data.checks, nextFix.id) : null;
 
+  if (data.excluded) {
+    return (
+      <Box padding="space.200">
+        <Stack space="space.200">
+          <SectionMessage title="Not scored by ReadySet" appearance="information">
+            <Text>
+              This project's ReadySet settings exclude this issue's type or status, so no
+              readiness score is kept for it. A project admin can change the exclusions on the
+              project page.
+            </Text>
+          </SectionMessage>
+          <Inline space="space.100">
+            <Button onClick={() => setRefreshCount((count) => count + 1)}>Refresh</Button>
+          </Inline>
+        </Stack>
+      </Box>
+    );
+  }
+
   return (
     <Box padding="space.200">
       <Stack space="space.200">

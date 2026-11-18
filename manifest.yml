@@ -48,6 +48,32 @@ modules:
         - path: grade
           type: string
           searchAlias: readysetGrade
+  # Workflow validators (Wave 3): expression-based, reading the
+  # Wave 1 entity property. Opt-in by construction — a Jira admin
+  # attaches one to a transition in the (company-managed) workflow
+  # editor; nothing is enforced anywhere else. Issues ReadySet has
+  # not scored yet (no property) always pass: there is no score to
+  # judge them by.
+  jira:workflowValidator:
+    - key: readyset-require-almost
+      name: ReadySet — Require Almost ready (60+)
+      description: >-
+        Blocks the transition unless the issue's ReadySet readiness grade is
+        Almost ready or Ready. Unscored issues pass.
+      expression: 'issue.properties.readyset == null || issue.properties.readyset.grade != "not-ready"'
+      errorMessage: >-
+        ReadySet: this issue is Not ready. Improve its description and
+        acceptance criteria until ReadySet scores it at least Almost ready,
+        then try the transition again.
+    - key: readyset-require-ready
+      name: ReadySet — Require Ready (80+)
+      description: >-
+        Blocks the transition unless the issue's ReadySet readiness grade is
+        Ready. Unscored issues pass.
+      expression: 'issue.properties.readyset == null || issue.properties.readyset.grade == "ready"'
+      errorMessage: >-
+        ReadySet: this issue is not Ready yet. Improve it until ReadySet
+        scores it Ready, then try the transition again.
   trigger:
     - key: readyset-issue-events
       function: event-handler

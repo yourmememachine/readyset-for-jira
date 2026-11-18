@@ -105,7 +105,31 @@ export interface ProjectSettings {
    * so it can be renamed only to another name containing it.
    */
   improveSections: string[];
+  /**
+   * Issue types ReadySet never scores (Wave 3 exclusions), matched
+   * case-insensitively against the Jira issue type name. Empty = score
+   * every type.
+   */
+  excludedIssueTypes: string[];
+  /** Status names ReadySet never scores (Wave 3), case-insensitive. Empty = none. */
+  excludedStatuses: string[];
+  /**
+   * Whether Done issues count in dashboard statistics (Wave 3).
+   * 'exclude' is the original behaviour; 'include' counts them in the
+   * average, the grade counts, and the worst-offenders list.
+   */
+  donePolicy: DonePolicy;
+  /**
+   * Opt-in usage counters (Wave 3): when true, the app counts scores
+   * computed, drafts generated, and improvements applied per day —
+   * stored ONLY in this site's own app storage, shown on the
+   * dashboard. Off by default; nothing is ever sent anywhere.
+   */
+  analyticsEnabled: boolean;
 }
+
+/** Dashboard treatment of Done issues (Wave 3). */
+export type DonePolicy = 'exclude' | 'include';
 
 /**
  * Provenance of a stored score — which input the score was computed

@@ -91,6 +91,12 @@ function SettingsForm({
     >,
   );
   const [sectionsText, setSectionsText] = useState(settings.improveSections.join(', '));
+  const [excludedTypesText, setExcludedTypesText] = useState(settings.excludedIssueTypes.join(', '));
+  const [excludedStatusesText, setExcludedStatusesText] = useState(
+    settings.excludedStatuses.join(', '),
+  );
+  const [donePolicy, setDonePolicy] = useState(settings.donePolicy);
+  const [analyticsEnabled, setAnalyticsEnabled] = useState(settings.analyticsEnabled);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -107,6 +113,10 @@ function SettingsForm({
       >,
     );
     setSectionsText(saved.improveSections.join(', '));
+    setExcludedTypesText(saved.excludedIssueTypes.join(', '));
+    setExcludedStatusesText(saved.excludedStatuses.join(', '));
+    setDonePolicy(saved.donePolicy);
+    setAnalyticsEnabled(saved.analyticsEnabled);
   };
 
   const persist = async (next: ProjectSettings, successMessage: string) => {
@@ -149,6 +159,11 @@ function SettingsForm({
       setMessage('The Improve structure needs at least one section heading.');
       return;
     }
+    const splitList = (text: string): string[] =>
+      text
+        .split(',')
+        .map((name) => name.trim())
+        .filter((name) => name.length > 0);
     await persist(
       {
         readyThreshold: readyValue,
@@ -156,6 +171,10 @@ function SettingsForm({
         checksEnabled: enabled,
         weights: parsedWeights,
         improveSections: parsedSections,
+        excludedIssueTypes: splitList(excludedTypesText),
+        excludedStatuses: splitList(excludedStatusesText),
+        donePolicy,
+        analyticsEnabled,
       },
       'Settings saved. Issues rescore against the new rubric.',
     );
@@ -243,6 +262,48 @@ function SettingsForm({
           none does, it is added automatically.
         </Text>
       </Box>
+      <Box>
+        <Label labelFor="readyset-excluded-types">Never score these issue types (comma-separated)</Label>
+        <Textfield
+          id="readyset-excluded-types"
+          value={excludedTypesText}
+          onChange={(event) => setExcludedTypesText(event.target.value)}
+        />
+      </Box>
+      <Box>
+        <Label labelFor="readyset-excluded-statuses">Never score issues in these statuses (comma-separated)</Label>
+        <Textfield
+          id="readyset-excluded-statuses"
+          value={excludedStatusesText}
+          onChange={(event) => setExcludedStatusesText(event.target.value)}
+        />
+        <Text>Excluded issues keep no ReadySet score and drop off the dashboard.</Text>
+      </Box>
+      <Box>
+        <Label labelFor="readyset-done-policy">Done issues on the dashboard</Label>
+        <Select
+          id="readyset-done-policy"
+          value={{
+            label: donePolicy === 'include' ? 'Include Done issues in the statistics' : 'Exclude Done issues from the statistics',
+            value: donePolicy,
+          }}
+          onChange={(option) => setDonePolicy(option.value === 'include' ? 'include' : 'exclude')}
+          options={[
+            { label: 'Exclude Done issues from the statistics', value: 'exclude' },
+            { label: 'Include Done issues in the statistics', value: 'include' },
+          ]}
+        />
+      </Box>
+      <Inline space="space.100" alignBlock="center">
+        <Toggle
+          id="readyset-analytics"
+          isChecked={analyticsEnabled}
+          onChange={(event) => setAnalyticsEnabled(event.target.checked ?? false)}
+        />
+        <Label labelFor="readyset-analytics">
+          Count usage in this site (scores computed, drafts, applies — last 7 days on the dashboard)
+        </Label>
+      </Inline>
       <Inline space="space.100">
         <Button appearance="primary" onClick={save} isDisabled={saving}>
           {saving ? 'Saving…' : 'Save settings'}
@@ -459,6 +520,11 @@ function ProjectPageApp() {
                 </Lozenge>
               ))}
             </Inline>
+            {data.analytics ? (
+              <Text>
+                {`Last 7 days in this site: ${data.analytics.scores} scores computed · ${data.analytics.drafts} drafts generated · ${data.analytics.applies} improvements applied.`}
+              </Text>
+            ) : null}
             <Heading size="small">Lowest-scoring open issues</Heading>
             <OffenderFilters
               records={stats.worstOffenders}

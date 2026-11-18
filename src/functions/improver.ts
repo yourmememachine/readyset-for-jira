@@ -44,7 +44,7 @@ import type {
   ProjectSettings,
   SummaryDraft,
 } from '../lib/types';
-import { getEffectiveFieldMap, scoreAndStore, type ResolverDeps } from './resolver';
+import { getEffectiveFieldMap, isExcluded, scoreAndStore, type ResolverDeps } from './resolver';
 
 /**
  * Read an issue for drafting/applying, refusing partial payloads:
@@ -168,6 +168,24 @@ function failedChecksOf(issue: NormalizedIssue, settings: ProjectSettings): Chec
   return scoreIssue(issue, settings).checks.filter((check) => !check.passed);
 }
 
+/**
+ * Rescore after a write (Apply paths). scoreAndStore returns null
+ * when the issue is excluded by project settings — possible if an
+ * admin excluded its type/status while a draft was open. The write
+ * already landed, so report the rubric's own numbers without storing.
+ */
+async function rescoreAfterWrite(
+  deps: ImproverDeps,
+  after: NormalizedIssue,
+  settings: ProjectSettings,
+  fieldMap: JiraFieldMap,
+): Promise<{ score: number; checks: CheckResult[] }> {
+  const record = await scoreAndStore(deps, after, settings, fieldMap, 'rest');
+  if (record) return record;
+  const scored = scoreIssue(after, settings);
+  return { score: scored.score, checks: scored.checks };
+}
+
 function projectedScore(
   issue: NormalizedIssue,
   sections: DraftSection[],
@@ -256,6 +274,9 @@ export async function draftForIssue(
     mode,
   };
   await deps.store.saveDraft(draft);
+  if (settings.analyticsEnabled) {
+    await deps.store.incrementAnalytics(issue.projectKey, 'drafts', deps.now ? deps.now() : new Date());
+  }
   return { draft, fromCache: false };
 }
 
@@ -273,6 +294,11 @@ export async function improveIssue(
   const raw = await adapter.getIssue(payload.issueKey, fieldMap);
   const issue = readCompleteIssue(raw, fieldMap);
   const settings = await deps.store.getSettings(issue.projectKey);
+  if (isExcluded(issue, settings)) {
+    throw new Error(
+      'This issue is excluded from ReadySet scoring by the project settings, so it cannot be improved here.',
+    );
+  }
   const mode = payload.mode ?? 'full';
   const { draft, fromCache } = await draftForIssue(deps, issue, settings, { mode });
   const acSection = draft.sections[0];
@@ -352,7 +378,7 @@ export async function applyImprovement(
   // the previous stored score is kept rather than replaced by a
   // skeleton score, and the next event or scan heals the record.
   const after = readCompleteIssue(await deps.jira.getIssue(payload.issueKey, fieldMap), fieldMap);
-  const record = await scoreAndStore(deps, after, settings, fieldMap, 'rest');
+  const record = await rescoreAfterWrite(deps, after, settings, fieldMap);
 
   // Richer audit comment (Wave 2): name the checks that flipped, so
   // the trail shows WHY the score moved, not just that it did.
@@ -376,6 +402,9 @@ export async function applyImprovement(
   }
   const comment = buildAdfFromSections([{ heading: '', paragraphs: commentParagraphs }]);
   await deps.jira.addComment(payload.issueKey, comment);
+  if (settings.analyticsEnabled) {
+    await deps.store.incrementAnalytics(issue.projectKey, 'applies', deps.now ? deps.now() : new Date());
+  }
 
   // Improve & Assign (Wave 3): best-effort and after the fact — the
   // improvement already landed, so an assignment failure is reported
@@ -416,6 +445,11 @@ export async function improveSummary(
   const fieldMap = await getEffectiveFieldMap(deps);
   const issue = readCompleteIssue(await adapter.getIssue(payload.issueKey, fieldMap), fieldMap);
   const settings = await deps.store.getSettings(issue.projectKey);
+  if (isExcluded(issue, settings)) {
+    throw new Error(
+      'This issue is excluded from ReadySet scoring by the project settings, so it cannot be improved here.',
+    );
+  }
   const scored = scoreIssue(issue, settings);
   const contentHash = summaryContentHash(issue);
   const cached = await deps.store.getSummaryDraft(issue.key, contentHash);
@@ -454,6 +488,9 @@ export async function improveSummary(
       generatedAt: (deps.now ? deps.now() : new Date()).toISOString(),
     };
     await deps.store.saveSummaryDraft(draft);
+    if (settings.analyticsEnabled) {
+      await deps.store.incrementAnalytics(issue.projectKey, 'drafts', deps.now ? deps.now() : new Date());
+    }
   }
   return {
     issueKey: issue.key,
@@ -494,7 +531,7 @@ export async function applySummary(
   }
   await deps.jira.updateSummary(payload.issueKey, draft.summary);
   const after = readCompleteIssue(await deps.jira.getIssue(payload.issueKey, fieldMap), fieldMap);
-  const record = await scoreAndStore(deps, after, settings, fieldMap, 'rest');
+  const record = await rescoreAfterWrite(deps, after, settings, fieldMap);
   const comment = buildAdfFromSections([
     {
       heading: '',
@@ -502,6 +539,9 @@ export async function applySummary(
     },
   ]);
   await deps.jira.addComment(payload.issueKey, comment);
+  if (settings.analyticsEnabled) {
+    await deps.store.incrementAnalytics(issue.projectKey, 'applies', deps.now ? deps.now() : new Date());
+  }
   return {
     issueKey: payload.issueKey,
     previousScore: current.score,

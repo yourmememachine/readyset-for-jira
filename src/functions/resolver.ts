@@ -72,6 +72,8 @@ export interface IssuePanelPayload {
   fromCache: boolean;
   /** Score history, oldest first (upgrade pack); empty when unknown. */
   history: ScoreHistoryEntry[];
+  /** True when the project's exclusions cover this issue (Wave 3): no score is kept for it. */
+  excluded?: boolean;
 }
 
 export interface ProjectDashboardPayload {
@@ -86,6 +88,8 @@ export interface ProjectDashboardPayload {
   fieldMap: JiraFieldMap;
   /** Whether the viewing user may change project settings (B13). */
   canEditSettings: boolean;
+  /** Last-7-days usage counters, present only when analytics are enabled (Wave 3). */
+  analytics?: { scores: number; drafts: number; applies: number };
 }
 
 export interface ScanResult {
@@ -176,16 +180,39 @@ function toStoredScore(
   };
 }
 
+/**
+ * Exclusions (Wave 3): an issue whose type or status is on the
+ * project's exclusion lists is never scored. Checked before every
+ * scoring entry point via scoreAndStore + the panel.
+ */
+export function isExcluded(issue: NormalizedIssue, settings: ProjectSettings): boolean {
+  const type = issue.issueType.trim().toLowerCase();
+  const status = issue.statusName.trim().toLowerCase();
+  return (
+    settings.excludedIssueTypes.some((candidate) => candidate.toLowerCase() === type) ||
+    settings.excludedStatuses.some((candidate) => candidate.toLowerCase() === status)
+  );
+}
+
 export async function scoreAndStore(
   deps: ResolverDeps,
   issue: NormalizedIssue,
   settings: ProjectSettings,
   fieldMap: JiraFieldMap,
   source: ScoreSource,
-): Promise<StoredScore> {
+): Promise<StoredScore | null> {
+  if (isExcluded(issue, settings)) {
+    // An excluded issue keeps no record: delete any score stored
+    // before the exclusion existed so dashboards drop it too.
+    await deps.store.deleteScore(issue.key);
+    return null;
+  }
   const record = toStoredScore(issue, settings, fieldMap, source, deps.now ? deps.now() : new Date());
   const previous = await deps.store.getScore(record.issueKey);
   await deps.store.saveScore(record);
+  if (settings.analyticsEnabled) {
+    await deps.store.incrementAnalytics(issue.projectKey, 'scores', deps.now ? deps.now() : new Date());
+  }
   // Entity property (upgrade pack, review #2): keep the JQL-searchable
   // score in step with the stored record. Best-effort — a failed
   // property write is logged and never fails the scoring path; the
@@ -264,6 +291,23 @@ export async function getIssuePanel(
   }
   const issue = normalizeIssue(raw, fieldMap);
   const settings = await deps.store.getSettings(issue.projectKey);
+  if (isExcluded(issue, settings)) {
+    // Excluded issues keep no score (Wave 3): drop any stored record
+    // and tell the panel why it shows no score.
+    await deps.store.deleteScore(issue.key);
+    return {
+      issueKey: issue.key,
+      summary: issue.summary,
+      statusName: issue.statusName,
+      score: 0,
+      grade: 'not-ready' as Grade,
+      checks: [],
+      computedAt: (deps.now ? deps.now() : new Date()).toISOString(),
+      fromCache: false,
+      history: [],
+      excluded: true,
+    };
+  }
   const cached = await deps.store.getScore(issue.key);
   if (
     cached &&
@@ -273,6 +317,10 @@ export async function getIssuePanel(
     return panelPayload(cached, settings, true);
   }
   const record = await scoreAndStore(deps, issue, settings, fieldMap, 'rest');
+  if (!record) {
+    // Unreachable (exclusion checked above) — fail loudly, never mint.
+    throw new Error(`ReadySet: ${issue.key} was excluded during scoring`);
+  }
   return panelPayload(record, settings, false);
 }
 
@@ -346,9 +394,9 @@ async function runScanChunk(
         continue;
       }
       const issue = normalizeIssue(raw, fieldMap);
-      await scoreAndStore(deps, issue, settings, fieldMap, 'rest');
+      const record = await scoreAndStore(deps, issue, settings, fieldMap, 'rest');
       seen.add(issue.key);
-      scanned += 1;
+      if (record) scanned += 1;
     }
     if (page.isLast || !page.nextPageToken) {
       if (reconcile) {
@@ -429,6 +477,9 @@ export async function getProjectDashboard(
   const stats = computeProjectStats(projectKey, records, settings);
   const fieldMap = await getEffectiveFieldMap(deps);
   const canEditSettings = await canAdminister(deps, projectKey);
+  const analytics = settings.analyticsEnabled
+    ? await deps.store.getAnalyticsTotals(projectKey, 7, deps.now ? deps.now() : new Date())
+    : undefined;
   return {
     projectKey,
     stats,
@@ -437,6 +488,7 @@ export async function getProjectDashboard(
     ...(state?.status === 'failed' && state.error ? { scanError: state.error } : {}),
     fieldMap,
     canEditSettings,
+    ...(analytics ? { analytics } : {}),
   };
 }
 
