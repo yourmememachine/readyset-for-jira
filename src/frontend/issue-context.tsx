@@ -22,6 +22,7 @@ import { events, invoke } from '@forge/bridge';
 import ForgeReconciler, {
   Box,
   Button,
+  Checkbox,
   Heading,
   Inline,
   Link,
@@ -33,22 +34,25 @@ import ForgeReconciler, {
   Text,
   useProductContext,
 } from '@forge/react';
-import type { ApplyPayload, ImprovePayload } from '../functions/improver';
+import type { ApplyPayload, ImprovePayload, SummaryImprovePayload } from '../functions/improver';
 import type { IssuePanelPayload } from '../functions/resolver';
 import { nextFixFor, projectedScoreIfFixed } from '../lib/rubric';
-import type { ScoreHistoryEntry } from '../lib/types';
+import type { ImproveMode, ScoreHistoryEntry } from '../lib/types';
 import {
   applyFailed,
   applyLoaded,
   beginApply,
   beginDraft,
+  diffSections,
   discardDraft,
   draftFailed,
   draftLoaded,
   draftSourceLabel,
   formatScoreChange,
   initialImproveState,
+  toImproveMessage,
   type ImproveFlowState,
+  type SectionDiffStatus,
 } from '../lib/improve-flow';
 import { toUserMessage } from '../lib/user-error';
 import { SUPPORT_EMAIL, scoreFeedbackHref } from '../lib/feedback';
@@ -84,10 +88,12 @@ function ImproveSection({
   setState: React.Dispatch<React.SetStateAction<ImproveFlowState>>;
   onApplied: () => void;
 }) {
-  const runImprove = async () => {
+  const [assignToMe, setAssignToMe] = useState(false);
+
+  const runImprove = async (mode: ImproveMode = 'full') => {
     setState((current) => beginDraft(current));
     try {
-      const payload = await invoke<ImprovePayload>('improveIssue', { issueKey });
+      const payload = await invoke<ImprovePayload>('improveIssue', { issueKey, mode });
       setState((current) => draftLoaded(current, payload));
     } catch (err) {
       setState((current) => draftFailed(current, err));
@@ -102,6 +108,7 @@ function ImproveSection({
       const result = await invoke<ApplyPayload>('applyImprovement', {
         issueKey,
         contentHash: draft.contentHash,
+        assignToMe,
       });
       setState((current) => applyLoaded(current, result));
       // Refetch the panel so the score on screen is the real,
@@ -116,16 +123,17 @@ function ImproveSection({
     case 'idle':
       return (
         <Inline space="space.100">
-          <Button appearance="primary" onClick={() => void runImprove()}>
+          <Button appearance="primary" onClick={() => void runImprove('full')}>
             Improve description
           </Button>
+          <Button onClick={() => void runImprove('ac-only')}>Acceptance criteria only</Button>
         </Inline>
       );
     case 'drafting':
       return (
         <Inline space="space.100" alignBlock="center">
           <Spinner size="small" />
-          <Text>Drafting an improved description…</Text>
+          <Text>Drafting an improvement…</Text>
         </Inline>
       );
     case 'review':
@@ -133,15 +141,34 @@ function ImproveSection({
       const draft = state.draft;
       if (!draft) return null;
       const applying = state.phase === 'applying';
+      const diffs = diffSections(draft.currentSections, draft.sections);
+      const DIFF_APPEARANCE: Record<SectionDiffStatus, 'success' | 'removed' | 'inprogress' | 'default'> = {
+        added: 'success',
+        removed: 'removed',
+        changed: 'inprogress',
+        same: 'default',
+      };
       return (
         <Stack space="space.100">
-          <SectionMessage title="Proposed description" appearance="information">
+          <SectionMessage
+            title={draft.mode === 'ac-only' ? 'Proposed acceptance criteria' : 'Proposed description'}
+            appearance="information"
+          >
             <Stack space="space.100">
               <Text>
                 Readiness {formatScoreChange(draft.currentScore, draft.projectedScore)} if
                 applied. {draftSourceLabel(draft.source)}
                 {draft.fromCache ? ' (cached draft)' : ''}
               </Text>
+              {diffs.length > 0 ? (
+                <Inline space="space.050">
+                  {diffs.map((diff) => (
+                    <Lozenge key={diff.heading} appearance={DIFF_APPEARANCE[diff.status]}>
+                      {`${diff.heading || 'Intro'}: ${diff.status}`}
+                    </Lozenge>
+                  ))}
+                </Inline>
+              ) : null}
               {draft.sections.map((section, index) => (
                 <Box key={`${section.heading}-${index}`}>
                   {section.heading ? (
@@ -159,6 +186,11 @@ function ImproveSection({
               <Text>{state.message}</Text>
             </SectionMessage>
           ) : null}
+          <Checkbox
+            label="Also assign this issue to me"
+            isChecked={assignToMe}
+            onChange={(event) => setAssignToMe(event.target.checked === true)}
+          />
           <Inline space="space.100">
             <Button
               appearance="primary"
@@ -192,10 +224,14 @@ function ImproveSection({
             <Text>
               Readiness {result.previousScore} → {result.newScore}. A comment on
               the issue records the change.
+              {result.assigned ? ' The issue is now assigned to you.' : ''}
+              {result.assignError
+                ? ' Assignment did not complete — assign it manually if needed.'
+                : ''}
             </Text>
           </SectionMessage>
           <Inline space="space.100">
-            <Button onClick={() => void runImprove()}>Improve again</Button>
+            <Button onClick={() => void runImprove('full')}>Improve again</Button>
             <Button onClick={() => setState((current) => discardDraft(current))}>
               Dismiss
             </Button>
@@ -223,6 +259,147 @@ function ImproveSection({
 }
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/**
+ * Summary Improve (Wave 3): suggest a specific replacement summary,
+ * review it with its projected score, apply it in place. A compact
+ * local state machine — the flow mirrors ImproveSection but the
+ * payload is a single line, so it does not need the shared flow lib.
+ */
+type SummaryPhase = 'idle' | 'drafting' | 'review' | 'applying' | 'applied' | 'error';
+
+function SummaryImproveSection({
+  issueKey,
+  onApplied,
+}: {
+  issueKey: string;
+  onApplied: () => void;
+}) {
+  const [phase, setPhase] = useState<SummaryPhase>('idle');
+  const [draft, setDraft] = useState<SummaryImprovePayload | null>(null);
+  const [result, setResult] = useState<ApplyPayload | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    setPhase('idle');
+    setDraft(null);
+    setResult(null);
+    setMessage(null);
+  }, [issueKey]);
+
+  const runImprove = async () => {
+    setPhase('drafting');
+    setMessage(null);
+    try {
+      const payload = await invoke<SummaryImprovePayload>('improveSummary', { issueKey });
+      setDraft(payload);
+      setPhase('review');
+    } catch (err) {
+      setMessage(toImproveMessage(err));
+      setPhase('error');
+    }
+  };
+
+  const runApply = async () => {
+    if (!draft) return;
+    setPhase('applying');
+    try {
+      const applied = await invoke<ApplyPayload>('applySummary', {
+        issueKey,
+        contentHash: draft.contentHash,
+      });
+      setResult(applied);
+      setPhase('applied');
+      onApplied();
+    } catch (err) {
+      setMessage(toImproveMessage(err));
+      setPhase('review');
+    }
+  };
+
+  switch (phase) {
+    case 'idle':
+      return (
+        <Inline space="space.100">
+          <Button onClick={() => void runImprove()}>Improve summary</Button>
+        </Inline>
+      );
+    case 'drafting':
+      return (
+        <Inline space="space.100" alignBlock="center">
+          <Spinner size="small" />
+          <Text>Drafting a better summary…</Text>
+        </Inline>
+      );
+    case 'review':
+    case 'applying': {
+      if (!draft) return null;
+      return (
+        <Stack space="space.100">
+          <SectionMessage title="Proposed summary" appearance="information">
+            <Stack space="space.100">
+              <Text>
+                Readiness {formatScoreChange(draft.currentScore, draft.projectedScore)} if
+                applied. {draft.source === 'llm' ? 'AI-suggested summary' : 'Summary derived from the issue text'}
+                {draft.fromCache ? ' (cached)' : ''}
+              </Text>
+              <Text>Current: {draft.currentSummary}</Text>
+              <Text>Suggested: {draft.suggestedSummary}</Text>
+            </Stack>
+          </SectionMessage>
+          {message ? (
+            <SectionMessage title="Apply failed" appearance="error">
+              <Text>{message}</Text>
+            </SectionMessage>
+          ) : null}
+          <Inline space="space.100">
+            <Button
+              appearance="primary"
+              onClick={() => void runApply()}
+              isDisabled={phase === 'applying' || !draft.canApply}
+            >
+              {phase === 'applying' ? 'Applying…' : 'Apply summary'}
+            </Button>
+            <Button onClick={() => setPhase('idle')} isDisabled={phase === 'applying'}>
+              Discard
+            </Button>
+          </Inline>
+          {!draft.canApply ? (
+            <Text>
+              You can review this suggestion, but applying it needs Edit issues permission in
+              this project.
+            </Text>
+          ) : null}
+        </Stack>
+      );
+    }
+    case 'applied':
+      return (
+        <Stack space="space.100">
+          <SectionMessage title="Summary updated" appearance="success">
+            <Text>
+              Readiness {result?.previousScore} → {result?.newScore}. A comment on the issue
+              records the change.
+            </Text>
+          </SectionMessage>
+          <Inline space="space.100">
+            <Button onClick={() => setPhase('idle')}>Dismiss</Button>
+          </Inline>
+        </Stack>
+      );
+    case 'error':
+      return (
+        <Stack space="space.100">
+          <SectionMessage title="Summary Improve did not complete" appearance="error">
+            <Text>{message ?? 'Something went wrong.'}</Text>
+          </SectionMessage>
+          <Inline space="space.100">
+            <Button onClick={() => setPhase('idle')}>Dismiss</Button>
+          </Inline>
+        </Stack>
+      );
+  }
+}
 
 /**
  * Latest score transition as a one-line history note (upgrade pack):
@@ -352,6 +529,10 @@ function IssueContextApp() {
           issueKey={issueKey}
           state={improve}
           setState={setImprove}
+          onApplied={() => setRefreshCount((count) => count + 1)}
+        />
+        <SummaryImproveSection
+          issueKey={issueKey}
           onApplied={() => setRefreshCount((count) => count + 1)}
         />
         <Inline space="space.100">

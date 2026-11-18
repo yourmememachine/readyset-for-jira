@@ -5,6 +5,7 @@ import {
   applyLoaded,
   beginApply,
   beginDraft,
+  diffSections,
   discardDraft,
   draftFailed,
   draftLoaded,
@@ -63,6 +64,8 @@ const DRAFT: ImprovePayload = {
   source: 'llm',
   fromCache: false,
   sections: [{ heading: 'Goal', paragraphs: ['Ship it.'] }],
+  currentSections: [],
+  mode: 'full',
   currentScore: 20,
   projectedScore: 60,
 };
@@ -191,5 +194,39 @@ describe('improve flow display helpers', () => {
   it('labels where the draft came from', () => {
     expect(draftSourceLabel('llm')).toMatch(/AI-drafted/);
     expect(draftSourceLabel('template')).toMatch(/Template draft/);
+  });
+});
+
+describe('diffSections (Wave 3 diff view)', () => {
+  const current = [
+    { heading: 'Goal', paragraphs: ['Ship it.'] },
+    { heading: 'Notes', paragraphs: ['Old note.'] },
+  ];
+
+  it('marks added, changed, same, and removed sections', () => {
+    const draft = [
+      { heading: 'Goal', paragraphs: ['Ship it.'] },
+      { heading: 'Notes', paragraphs: ['New note.'] },
+      { heading: 'Acceptance criteria', paragraphs: ['It works.'] },
+    ];
+    expect(diffSections(current, draft)).toEqual([
+      { heading: 'Goal', status: 'same' },
+      { heading: 'Notes', status: 'changed' },
+      { heading: 'Acceptance criteria', status: 'added' },
+    ]);
+    const shrinking = [{ heading: 'Goal', paragraphs: ['Ship it.'] }];
+    expect(diffSections(current, shrinking)).toEqual([
+      { heading: 'Goal', status: 'same' },
+      { heading: 'Notes', status: 'removed' },
+    ]);
+  });
+
+  it('matches headings case-insensitively and ignores the unheaded intro in removals', () => {
+    const withIntro = [{ heading: '', paragraphs: ['Loose text.'] }, ...current];
+    const draft = [{ heading: 'goal', paragraphs: ['Ship it.'] }];
+    expect(diffSections(withIntro, draft)).toEqual([
+      { heading: 'goal', status: 'same' },
+      { heading: 'Notes', status: 'removed' },
+    ]);
   });
 });

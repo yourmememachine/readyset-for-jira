@@ -70,7 +70,13 @@ check(
   'write:jira-work scope missing but the phase-2a Apply flow writes to Jira',
 );
 
-const ACTION_KEYS = ['fetch-issue-readiness', 'fetch-project-readiness', 'fetch-fix-first'];
+const ACTION_KEYS = [
+  'fetch-issue-readiness',
+  'fetch-project-readiness',
+  'fetch-fix-first',
+  'fetch-suggested-fixes',
+  'fetch-compare-issues',
+];
 const actionBlock = moduleBlock('action');
 for (const key of ACTION_KEYS) {
   check(actionBlock.includes(`key: ${key}`), `action module is missing ${key}`);

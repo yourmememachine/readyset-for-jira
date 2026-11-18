@@ -92,6 +92,17 @@ export interface JiraAdapter {
    */
   updateDescription(issueKey: string, description: AdfDoc): Promise<void>;
   /**
+   * Replace an issue's summary (Wave 3 summary Improve). Runs as the
+   * app, like the description write.
+   */
+  updateSummary(issueKey: string, summary: string): Promise<void>;
+  /**
+   * Assign the issue to the *current user* (Wave 3 Improve & Assign).
+   * Checked and performed as the user: the assignee is whoever clicked
+   * Apply, never the app.
+   */
+  assignToCurrentUser(issueKey: string): Promise<void>;
+  /**
    * Post a comment (ADF body) on an issue. Used by Apply to leave the
    * "improved with ReadySet — readiness X → Y" audit trail.
    */
@@ -436,6 +447,27 @@ export class FakeJiraAdapter implements JiraAdapter {
     // Mutate the held payload so a later getIssue returns the new
     // description — the Apply flow rescores from exactly that re-read.
     issue.fields.description = structuredClone(description);
+  }
+
+  readonly updateSummaryCalls: Array<{ issueKey: string; summary: string }> = [];
+
+  async updateSummary(issueKey: string, summary: string): Promise<void> {
+    this.updateSummaryCalls.push({ issueKey, summary });
+    const issue = this.issues.find((candidate) => candidate.key === issueKey);
+    if (!issue) throw new Error(`FakeJiraAdapter: unknown issue ${issueKey}`);
+    issue.fields.summary = summary;
+  }
+
+  readonly assignToCurrentUserCalls: string[] = [];
+  /** When set, assignToCurrentUser throws it (best-effort contract tests). */
+  assignError: Error | null = null;
+
+  async assignToCurrentUser(issueKey: string): Promise<void> {
+    this.assignToCurrentUserCalls.push(issueKey);
+    if (this.assignError) throw this.assignError;
+    const issue = this.issues.find((candidate) => candidate.key === issueKey);
+    if (!issue) throw new Error(`FakeJiraAdapter: unknown issue ${issueKey}`);
+    issue.fields.assignee = { displayName: 'Current User', accountId: 'fake-current-user' } as never;
   }
 
   async addComment(issueKey: string, body: AdfDoc): Promise<void> {

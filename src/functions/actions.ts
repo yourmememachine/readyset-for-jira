@@ -10,7 +10,7 @@
  * action functions; tests drive them with the in-memory store.
  */
 import { computeProjectStats } from '../lib/aggregate';
-import { gradeForScore } from '../lib/rubric';
+import { gradeForScore, projectedScoreIfFixed } from '../lib/rubric';
 import type { ScanStatus } from '../lib/store';
 import type { CheckResult, Grade } from '../lib/types';
 import type { ResolverDeps } from './resolver';
@@ -119,6 +119,107 @@ export interface FixFirstResult {
     /** Highest-weight failing checks first — the fix order. */
     topFixes: Array<{ label: string; weight: number; fixHint: string }>;
   }>;
+}
+
+export interface SuggestedFixesResult {
+  found: boolean;
+  projectKey: string;
+  issueKey?: string;
+  summary?: string;
+  score?: number;
+  grade?: Grade;
+  /** Every failing check with the score the issue would reach by fixing just it. */
+  fixes?: Array<{
+    label: string;
+    fixHint: string;
+    projectedScore: number;
+    projectedGain: number;
+  }>;
+}
+
+/**
+ * "What should I fix next on the worst issue?" (Wave 3) — the single
+ * lowest-scoring open issue with every failing check and the exact
+ * projected gain of fixing each one alone, best gain first. All
+ * numbers come from the stored score + the rubric's own projection.
+ */
+export async function fetchSuggestedFixes(
+  deps: ResolverDeps,
+  payload: { projectKey: string },
+): Promise<SuggestedFixesResult> {
+  const records = await deps.store.getProjectScores(payload.projectKey);
+  const settings = await deps.store.getSettings(payload.projectKey);
+  const stats = computeProjectStats(payload.projectKey, records, settings, 1);
+  const worst = stats.worstOffenders[0];
+  if (!worst) return { found: false, projectKey: payload.projectKey };
+  const fixes = worst.checks
+    .filter((check) => !check.passed)
+    .map((check) => {
+      const projected = projectedScoreIfFixed(worst.checks, check.id);
+      return {
+        label: check.label,
+        fixHint: check.fixHint,
+        projectedScore: projected,
+        projectedGain: projected - worst.score,
+      };
+    })
+    .sort((a, b) => b.projectedGain - a.projectedGain);
+  return {
+    found: true,
+    projectKey: payload.projectKey,
+    issueKey: worst.issueKey,
+    summary: worst.summary,
+    score: worst.score,
+    grade: worst.grade,
+    fixes,
+  };
+}
+
+export interface CompareIssuesResult {
+  found: boolean;
+  missing?: string[];
+  a?: IssueReadinessResult;
+  b?: IssueReadinessResult;
+  /** Checks where the two issues differ (pass/fail), with both outcomes. */
+  differences?: Array<{
+    label: string;
+    aPassed: boolean;
+    bPassed: boolean;
+    aDetail: string;
+    bDetail: string;
+  }>;
+}
+
+/**
+ * "Compare ABC-1 and ABC-2" (Wave 3) — both readiness answers plus
+ * the checks where they actually differ, so the agent can explain a
+ * score gap instead of reciting two full checklists.
+ */
+export async function fetchCompareIssues(
+  deps: ResolverDeps,
+  payload: { issueKeyA: string; issueKeyB: string },
+): Promise<CompareIssuesResult> {
+  const a = await fetchIssueReadiness(deps, { issueKey: payload.issueKeyA });
+  const b = await fetchIssueReadiness(deps, { issueKey: payload.issueKeyB });
+  const missing = [a, b].filter((result) => !result.found).map((result) => result.issueKey);
+  if (missing.length > 0) return { found: false, missing };
+  const bById = new Map((b.checks ?? []).map((check) => [check.id, check]));
+  const differences = (a.checks ?? [])
+    .filter((check) => {
+      const other = bById.get(check.id);
+      return other !== undefined && other.passed !== check.passed;
+    })
+    .map((check) => {
+      const other = bById.get(check.id);
+      return {
+        label: check.label,
+        aPassed: check.passed,
+        bPassed: other?.passed ?? false,
+        aDetail: check.detail,
+        bDetail: other?.detail ?? '',
+      };
+    });
+  return { found: true, a, b, differences };
 }
 
 const DEFAULT_FIX_FIRST_LIMIT = 5;

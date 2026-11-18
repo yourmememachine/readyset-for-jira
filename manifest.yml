@@ -73,6 +73,10 @@ modules:
       handler: index.fetchProjectReadinessAction
     - key: action-fix-first
       handler: index.fetchFixFirstAction
+    - key: action-suggest-fixes
+      handler: index.fetchSuggestedFixesAction
+    - key: action-compare-issues
+      handler: index.fetchCompareIssuesAction
   # ReadySet Coach actions: GET-only, read from stored scores. Agents
   # triggered by automation rules never call write-verb actions, and
   # the Coach is read-only by design (DESIGN.md §1, §5.3 item 5).
@@ -124,6 +128,40 @@ modules:
           type: number
           required: false
           description: How many issues to return (default 5, maximum 25).
+    - key: fetch-suggested-fixes
+      name: Fetch suggested fixes
+      description: >-
+        Returns a project's single lowest-scoring open issue with every
+        failing readiness check and the exact projected score gain of
+        fixing each one alone, best gain first. Answers from stored
+        scores only.
+      actionVerb: GET
+      function: action-suggest-fixes
+      inputs:
+        projectKey:
+          title: Project key
+          type: string
+          required: true
+          description: The Jira project key, for example ABC.
+    - key: fetch-compare-issues
+      name: Fetch issue comparison
+      description: >-
+        Returns the readiness scores of two Jira issues plus the checks
+        where they differ, so a score gap can be explained check by
+        check. Answers from stored scores only.
+      actionVerb: GET
+      function: action-compare-issues
+      inputs:
+        issueKeyA:
+          title: First issue key
+          type: string
+          required: true
+          description: The first Jira issue key, for example ABC-123.
+        issueKeyB:
+          title: Second issue key
+          type: string
+          required: true
+          description: The second Jira issue key, for example ABC-124.
   rovo:agent:
     - key: readyset-coach
       name: ReadySet Coach
@@ -151,6 +189,11 @@ modules:
         Use it for "How ready is project ABC?" - fetch-fix-first - a project's
         lowest-scoring open issues, each with its highest-weight failing checks
         and their one-line fixes. Use it for "What should I fix first?"
+        - fetch-suggested-fixes - a project's single lowest-scoring open issue
+        with every failing check and the exact projected score gain of fixing
+        each one. Use it for "What is the fastest win in project ABC?"
+        - fetch-compare-issues - two issues' scores and the checks where they
+        differ. Use it for "Why does ABC-123 score higher than ABC-124?"
 
         How you answer: - Always ground answers in these actions. If an action
         returns no data for an issue or project, say it has not been scored yet
@@ -167,6 +210,8 @@ modules:
         - fetch-issue-readiness
         - fetch-project-readiness
         - fetch-fix-first
+        - fetch-suggested-fixes
+        - fetch-compare-issues
       conversationStarters:
         - How ready is this issue for the sprint?
         - Which issues in my project are not ready yet?

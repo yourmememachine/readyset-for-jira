@@ -19,6 +19,14 @@ export interface DraftRequest {
   failedChecks: CheckResult[];
   /** Section headings to draft toward (project settings, Wave 2). */
   sections?: string[];
+  /**
+   * Draft kind (Wave 3): 'ac-only' asks for ONLY the Acceptance
+   * criteria section (its heading is `sections[0]`-matched AC heading);
+   * anything else is a full-description draft.
+   */
+  mode?: 'full' | 'ac-only';
+  /** Summary Improve (Wave 3): draft a one-line summary instead of a description. */
+  kind?: 'description' | 'summary';
 }
 
 /**
@@ -38,6 +46,46 @@ export const DRAFT_HEADINGS = DEFAULT_IMPROVE_SECTIONS;
 export function buildDraftPrompt(request: DraftRequest): { system: string; user: string } {
   const { issue, failedChecks } = request;
   const headings = request.sections && request.sections.length > 0 ? request.sections : DRAFT_HEADINGS;
+  if (request.kind === 'summary') {
+    return {
+      system: [
+        'You write Jira issue summaries for a sprint-readiness tool.',
+        'Reply with ONE summary line only — no headings, no quotes, no preamble.',
+        'Rules:',
+        '- Use ONLY facts present in the issue text you are given. Never invent names, dates, metrics, systems, or requirements.',
+        '- Be specific: name the system or behaviour being changed and the outcome. Avoid vague summaries like "Fix bug" or "Update stuff".',
+        '- Never write TBD, TODO, or any placeholder marker.',
+        '- Keep it under 120 characters.',
+      ].join('\n'),
+      user: [
+        `Current summary: ${issue.summary}`,
+        '',
+        'Current description:',
+        issue.descriptionText.trim().length > 0 ? issue.descriptionText : '(empty)',
+      ].join('\n'),
+    };
+  }
+  if (request.mode === 'ac-only') {
+    const acHeading = headings.find((name) => /^acceptance criteria\b/i.test(name)) ?? 'Acceptance criteria';
+    return {
+      system: [
+        'You write acceptance criteria for Jira issues for a sprint-readiness tool.',
+        `Reply with markdown using exactly one level-2 heading: ## ${acHeading}`,
+        'Rules:',
+        '- Use ONLY facts present in the issue text you are given. Never invent names, dates, metrics, systems, or requirements.',
+        '- If the issue gives you too few facts, still return the section: write criteria for verifying the work once it is specified. Never refuse, never ask questions back, and never write anything outside the section.',
+        '- Acceptance criteria must be testable statements, one per line, each starting with "- ".',
+        '- Never write TBD, TODO, or any placeholder marker.',
+        '- Keep the whole reply under 300 tokens.',
+      ].join('\n'),
+      user: [
+        `Issue: ${issue.key} — ${issue.summary}`,
+        '',
+        'Current description:',
+        issue.descriptionText.trim().length > 0 ? issue.descriptionText : '(empty)',
+      ].join('\n'),
+    };
+  }
   const system = [
     'You rewrite Jira issue descriptions for a sprint-readiness tool.',
     'Reply with markdown using exactly these level-2 headings, in this order:',
@@ -163,4 +211,27 @@ export function parseDraftMarkdown(
     );
   }
   return sections;
+}
+
+const SUMMARY_PLACEHOLDER_RE = /\b(tbd|todo|fixme|placeholder)\b/i;
+
+/**
+ * Validate a model's summary reply (Wave 3): exactly one usable line —
+ * specific length, no placeholders, no markdown dressing. Throws on
+ * anything else so the caller falls back to the derived template.
+ */
+export function parseSummaryReply(reply: string): string {
+  const line = reply
+    .split('\n')
+    .map((candidate) => candidate.trim())
+    .find((candidate) => candidate.length > 0);
+  if (!line) throw new Error('ReadySet: LLM summary reply was empty');
+  const cleaned = line.replace(/^#+\s*/, '').replace(/^["']|["']$/g, '').trim();
+  if (cleaned.length < 10 || cleaned.length > 255) {
+    throw new Error('ReadySet: LLM summary reply is not a usable one-line summary');
+  }
+  if (SUMMARY_PLACEHOLDER_RE.test(cleaned)) {
+    throw new Error('ReadySet: LLM summary reply contains a placeholder marker');
+  }
+  return cleaned;
 }

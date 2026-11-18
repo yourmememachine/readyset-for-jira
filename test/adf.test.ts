@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildAdfFromSections, extractTextFromAdf } from '../src/lib/adf';
+import { buildAdfFromSections, extractTextFromAdf, mergeAcSectionIntoAdf, sectionsFromAdf } from '../src/lib/adf';
 
 describe('extractTextFromAdf', () => {
   it('returns empty string for null/undefined', () => {
@@ -171,5 +171,55 @@ describe('buildAdfFromSections', () => {
   it('is deterministic', () => {
     const sections = [{ heading: 'Goal', paragraphs: ['One.', 'Two.'] }];
     expect(buildAdfFromSections(sections)).toEqual(buildAdfFromSections(sections));
+  });
+});
+
+describe('sectionsFromAdf + mergeAcSectionIntoAdf (Wave 3)', () => {
+  const original = buildAdfFromSections([
+    { heading: 'Goal', paragraphs: ['Ship the gateway limiter.'] },
+    { heading: 'Acceptance criteria', paragraphs: ['Old criterion that is too vague.'] },
+    { heading: 'Notes', paragraphs: ['Keep this section untouched.'] },
+  ]);
+
+  it('splits a doc into its sections', () => {
+    const sections = sectionsFromAdf(original);
+    expect(sections.map((section) => section.heading)).toEqual([
+      'Goal',
+      'Acceptance criteria',
+      'Notes',
+    ]);
+    expect(sections[1]?.paragraphs).toEqual(['Old criterion that is too vague.']);
+  });
+
+  it('replaces only the AC section, leaving the rest byte-identical in text', () => {
+    const merged = mergeAcSectionIntoAdf(original, {
+      heading: 'Acceptance criteria',
+      paragraphs: ['Quota breaches return HTTP 429 with a Retry-After header.'],
+    });
+    const text = extractTextFromAdf(merged);
+    expect(text).toContain('Ship the gateway limiter.');
+    expect(text).toContain('Keep this section untouched.');
+    expect(text).toContain('Quota breaches return HTTP 429');
+    expect(text).not.toContain('Old criterion');
+  });
+
+  it('appends the AC section when the doc has none', () => {
+    const noAc = buildAdfFromSections([{ heading: 'Goal', paragraphs: ['Ship it.'] }]);
+    const merged = mergeAcSectionIntoAdf(noAc, {
+      heading: 'Acceptance criteria',
+      paragraphs: ['It works in production.'],
+    });
+    const sections = sectionsFromAdf(merged);
+    expect(sections.map((section) => section.heading)).toEqual(['Goal', 'Acceptance criteria']);
+  });
+
+  it('an empty doc becomes just the AC section', () => {
+    const merged = mergeAcSectionIntoAdf(null, {
+      heading: 'Acceptance criteria',
+      paragraphs: ['Done when verified.'],
+    });
+    expect(sectionsFromAdf(merged)).toEqual([
+      { heading: 'Acceptance criteria', paragraphs: ['Done when verified.'] },
+    ]);
   });
 });

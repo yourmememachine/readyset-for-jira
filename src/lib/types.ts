@@ -225,4 +225,31 @@ export interface ImprovementDraft {
   scoreAtDraft: number;
   /** ISO timestamp of generation. */
   generatedAt: string;
+  /**
+   * Draft kind (Wave 3): 'full' rewrites the whole description;
+   * 'ac-only' drafts just the Acceptance criteria section and Apply
+   * merges it into the existing description. Absent on pre-Wave-3
+   * drafts — treated as 'full'.
+   */
+  mode?: ImproveMode;
+}
+
+/** Which part of an issue an Improve draft targets (Wave 3). */
+export type ImproveMode = 'full' | 'ac-only';
+
+/**
+ * A suggested replacement summary (Wave 3 summary Improve), cached in
+ * KVS under `sumdraft:{issueKey}:{contentHash}` with the same
+ * stale-refusal contract as description drafts.
+ */
+export interface SummaryDraft {
+  issueKey: string;
+  projectKey: string;
+  contentHash: string;
+  source: DraftSource;
+  /** The suggested one-line summary. */
+  summary: string;
+  /** The issue's score when the suggestion was generated. */
+  scoreAtDraft: number;
+  generatedAt: string;
 }

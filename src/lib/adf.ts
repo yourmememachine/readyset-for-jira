@@ -111,6 +111,89 @@ export interface DraftSection {
   paragraphs: string[];
 }
 
+/** Anchored AC heading test — the same rule the rubric applies. */
+const AC_HEADING_TEXT_RE = /^acceptance criteria\b/i;
+
+function nodePlainText(node: AdfNode): string {
+  const parts: string[] = [];
+  nodeText(node, parts);
+  return parts.join('').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Split a description doc into sections at its top-level headings
+ * (Wave 3 diff view + partial Improve). Content before the first
+ * heading becomes an unheaded section; non-paragraph blocks flatten
+ * to their text as paragraphs. Lossy by design — this is a reading
+ * view, never a write path.
+ */
+export function sectionsFromAdf(input: unknown): DraftSection[] {
+  if (input === null || input === undefined) return [];
+  if (typeof input === 'string') {
+    return input.trim().length > 0 ? [{ heading: '', paragraphs: [input.trim()] }] : [];
+  }
+  if (typeof input !== 'object') return [];
+  const doc = input as AdfDoc;
+  if (!Array.isArray(doc.content)) return [];
+  const sections: DraftSection[] = [];
+  let current: DraftSection = { heading: '', paragraphs: [] };
+  const flush = (): void => {
+    if (current.heading.length > 0 || current.paragraphs.length > 0) sections.push(current);
+  };
+  for (const node of doc.content) {
+    if (node.type === 'heading') {
+      flush();
+      current = { heading: nodePlainText(node), paragraphs: [] };
+    } else {
+      const text = nodePlainText(node);
+      if (text.length > 0) current.paragraphs.push(text);
+    }
+  }
+  flush();
+  return sections;
+}
+
+/**
+ * Replace (or append) the Acceptance criteria section of an existing
+ * description doc, leaving every other section untouched (Wave 3
+ * partial Improve). Works on top-level ADF nodes: the AC section is
+ * the run of non-heading nodes after an anchored AC heading. A doc
+ * with no AC heading gains one at the end; an empty doc becomes just
+ * the AC section.
+ */
+export function mergeAcSectionIntoAdf(input: unknown, acSection: DraftSection): AdfDoc {
+  const replacement: AdfNode[] = [
+    headingNode(acSection.heading, 2),
+    ...acSection.paragraphs.map((paragraph) => paragraphNode(paragraph)),
+  ];
+  if (input === null || input === undefined || typeof input !== 'object') {
+    return { type: 'doc', version: 1, content: replacement };
+  }
+  const doc = input as AdfDoc;
+  if (!Array.isArray(doc.content) || doc.content.length === 0) {
+    return { type: 'doc', version: 1, content: replacement };
+  }
+  const content: AdfNode[] = [];
+  let replaced = false;
+  let skipping = false;
+  for (const node of doc.content) {
+    if (node.type === 'heading') {
+      if (!replaced && AC_HEADING_TEXT_RE.test(nodePlainText(node))) {
+        content.push(...replacement);
+        replaced = true;
+        skipping = true;
+        continue;
+      }
+      skipping = false;
+      content.push(node);
+      continue;
+    }
+    if (!skipping) content.push(node);
+  }
+  if (!replaced) content.push(...replacement);
+  return { type: 'doc', version: 1, content };
+}
+
 function paragraphNode(text: string): AdfNode {
   return { type: 'paragraph', content: [{ type: 'text', text }] };
 }

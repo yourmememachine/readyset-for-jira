@@ -37,7 +37,7 @@
  */
 import { ACCEPTANCE_CRITERIA_HEADING, ALL_CHECK_IDS, DEFAULT_SETTINGS } from './rubric-config';
 import type { JiraFieldMap } from './jira';
-import type { CheckId, ImprovementDraft, ProjectSettings, StoredScore } from './types';
+import type { CheckId, ImprovementDraft, ProjectSettings, StoredScore, SummaryDraft } from './types';
 
 export interface KeyValueStore {
   get<T>(key: string): Promise<T | undefined>;
@@ -104,6 +104,8 @@ export const FIELDMAP_KEY = 'fieldmap';
 export const ROSTER_KEY = 'rescan-roster';
 export const draftKey = (issueKey: string, contentHash: string): string =>
   `draft:${issueKey}:${contentHash}`;
+export const summaryDraftKey = (issueKey: string, contentHash: string): string =>
+  `sumdraft:${issueKey}:${contentHash}`;
 
 export interface RescanCheckpoint {
   /** Opaque Jira `nextPageToken`; null means "start from the first page". */
@@ -372,5 +374,16 @@ export class ScoreStore {
 
   async saveDraft(draft: ImprovementDraft): Promise<void> {
     await this.kv.set(draftKey(draft.issueKey, draft.contentHash), draft);
+  }
+
+  async getSummaryDraft(
+    issueKey: string,
+    contentHash: string,
+  ): Promise<SummaryDraft | undefined> {
+    return this.kv.get<SummaryDraft>(summaryDraftKey(issueKey, contentHash));
+  }
+
+  async saveSummaryDraft(draft: SummaryDraft): Promise<void> {
+    await this.kv.set(summaryDraftKey(draft.issueKey, draft.contentHash), draft);
   }
 }

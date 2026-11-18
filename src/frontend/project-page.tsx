@@ -37,6 +37,7 @@ import ForgeReconciler, {
   useProductContext,
 } from '@forge/react';
 import type { ProjectDashboardPayload, ScanResult } from '../functions/resolver';
+import type { BulkImproveResult } from '../functions/bulk-improve';
 import { parseThresholdInput } from '../lib/threshold-input';
 import { ALL_CHECK_IDS, CHECK_LABELS, DEFAULT_SETTINGS } from '../lib/rubric-config';
 import type { CheckId, Grade, ProjectSettings } from '../lib/types';
@@ -255,6 +256,71 @@ function SettingsForm({
   );
 }
 
+/**
+ * Bulk Improve (Wave 3): one admin click applies template drafts to
+ * the five lowest-scoring open issues. Template-only by design (fast
+ * and deterministic); per-issue results are listed, failures included.
+ */
+function BulkImproveSection({
+  projectKey,
+  onDone,
+}: {
+  projectKey: string;
+  onDone: () => void;
+}) {
+  const [running, setRunning] = useState(false);
+  const [results, setResults] = useState<BulkImproveResult[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const run = async () => {
+    setRunning(true);
+    setError(null);
+    try {
+      const payload = await invoke<{ results: BulkImproveResult[] }>('bulkImprove', { projectKey });
+      setResults(payload.results);
+      onDone();
+    } catch (err) {
+      setError(toUserMessage(err));
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  return (
+    <Stack space="space.100">
+      <Inline space="space.100" alignBlock="center">
+        <Button onClick={() => void run()} isDisabled={running}>
+          {running ? 'Improving…' : 'Improve 5 lowest (template)'}
+        </Button>
+        <Text>
+          Applies the built-in template draft to the five lowest-scoring open issues — the same
+          checked Apply path as the panel, one click.
+        </Text>
+      </Inline>
+      {error ? (
+        <SectionMessage title="Bulk Improve did not complete" appearance="error">
+          <Text>{error}</Text>
+        </SectionMessage>
+      ) : null}
+      {results ? (
+        results.length === 0 ? (
+          <Text>No open issues below the Ready threshold — nothing to improve.</Text>
+        ) : (
+          <Stack space="space.050">
+            {results.map((entry) => (
+              <Text key={entry.issueKey}>
+                {entry.error
+                  ? `${entry.issueKey}: could not be improved — ${entry.error}`
+                  : `${entry.issueKey}: readiness ${entry.previousScore} → ${entry.newScore}`}
+              </Text>
+            ))}
+          </Stack>
+        )
+      ) : null}
+    </Stack>
+  );
+}
+
 function ProjectPageApp() {
   const context = useProductContext();
   const projectKey = extractProjectKey(context);
@@ -458,6 +524,9 @@ function ProjectPageApp() {
             {rescanning ? 'Scanning…' : scanFailed ? 'Retry scan' : 'Rescan now'}
           </Button>
         </Inline>
+        {data.canEditSettings ? (
+          <BulkImproveSection projectKey={projectKey} onDone={() => setReloadCount((count) => count + 1)} />
+        ) : null}
         <SettingsForm
           key={JSON.stringify(settings)}
           projectKey={projectKey}

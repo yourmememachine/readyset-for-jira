@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildDraftPrompt, parseDraftMarkdown } from '../src/lib/llm';
+import { buildDraftPrompt, parseDraftMarkdown, parseSummaryReply } from '../src/lib/llm';
 import { scoreIssue } from '../src/lib/rubric';
 import { makeIssue } from './fixtures';
 
@@ -107,8 +107,44 @@ describe('buildDraftPrompt', () => {
     expect(prompt.system).toContain('Never refuse');
     expect(prompt.user).toContain('RS-1');
     expect(prompt.user).toContain('Fix bug');
+    expect(prompt.user).toContain('Current description:');
     expect(prompt.user).toContain('(empty)');
     // The estimate failure's fix hint is handed to the model verbatim.
     expect(prompt.user).toContain('Estimate the work');
+  });
+
+  it('ac-only mode asks for exactly one section (Wave 3)', () => {
+    const issue = makeIssue({ summary: 'Fix bug', descriptionText: '', storyPoints: null });
+    const failed = scoreIssue(issue).checks.filter((check) => !check.passed);
+    const prompt = buildDraftPrompt({ issue, failedChecks: failed, mode: 'ac-only' });
+    expect(prompt.system).toContain('exactly one level-2 heading: ## Acceptance criteria');
+    expect(prompt.system).toContain('Never refuse');
+    expect(prompt.system).not.toContain('## Goal');
+  });
+
+  it('summary kind asks for one line under 120 characters (Wave 3)', () => {
+    const issue = makeIssue({ summary: 'Fix bug', descriptionText: 'Something real.' });
+    const prompt = buildDraftPrompt({ issue, failedChecks: [], kind: 'summary' });
+    expect(prompt.system).toContain('ONE summary line only');
+    expect(prompt.system).toContain('under 120 characters');
+    expect(prompt.user).toContain('Current summary: Fix bug');
+  });
+});
+
+describe('parseSummaryReply (Wave 3)', () => {
+  it('accepts a clean one-line summary and strips dressing', () => {
+    expect(parseSummaryReply('Add token-bucket rate limiting to the API gateway')).toBe(
+      'Add token-bucket rate limiting to the API gateway',
+    );
+    expect(parseSummaryReply('"Add rate limiting to the API gateway"')).toBe(
+      'Add rate limiting to the API gateway',
+    );
+  });
+
+  it('throws on placeholders, empties, and over-long replies', () => {
+    expect(() => parseSummaryReply('TBD — fix the gateway thing')).toThrow(/placeholder/);
+    expect(() => parseSummaryReply('')).toThrow(/empty/);
+    expect(() => parseSummaryReply('short')).toThrow(/not a usable/);
+    expect(() => parseSummaryReply('x'.repeat(300))).toThrow(/not a usable/);
   });
 });

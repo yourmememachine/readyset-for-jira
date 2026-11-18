@@ -143,7 +143,7 @@ export async function getEffectiveFieldMap(deps: ResolverDeps): Promise<JiraFiel
   return resolved;
 }
 
-async function canAdminister(deps: ResolverDeps, projectKey: string): Promise<boolean> {
+export async function canAdminister(deps: ResolverDeps, projectKey: string): Promise<boolean> {
   const adapter = deps.jiraUser ?? deps.jira;
   try {
     return await adapter.hasProjectPermission(projectKey, ADMIN_PERMISSION);

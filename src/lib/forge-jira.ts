@@ -157,6 +157,37 @@ export class ForgeJiraAdapter implements JiraAdapter {
     await assertOk(response, `updateDescription(${issueKey})`);
   }
 
+  async updateSummary(issueKey: string, summary: string): Promise<void> {
+    const query = new URLSearchParams({ notifyUsers: 'false' });
+    const response = await this.requester().requestJira(
+      route`/rest/api/3/issue/${issueKey}?${query}`,
+      {
+        method: 'PUT',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fields: { summary } }),
+      },
+    );
+    await assertOk(response, `updateSummary(${issueKey})`);
+  }
+
+  async assignToCurrentUser(issueKey: string): Promise<void> {
+    // The assignee is the clicking user: resolve their account id and
+    // assign as them (Assign issues permission is theirs to hold).
+    const myselfResponse = await api.asUser().requestJira(route`/rest/api/3/myself`, {
+      headers: { Accept: 'application/json' },
+    });
+    const myself = await readJson<{ accountId?: string }>(myselfResponse, 'assignToCurrentUser');
+    if (!myself.accountId) throw new Error('ReadySet: could not resolve the current user');
+    const response = await api
+      .asUser()
+      .requestJira(route`/rest/api/3/issue/${issueKey}/assignee`, {
+        method: 'PUT',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accountId: myself.accountId }),
+      });
+    await assertOk(response, `assignToCurrentUser(${issueKey})`);
+  }
+
   async addComment(issueKey: string, body: AdfDoc): Promise<void> {
     // POST /rest/api/3/issue/{key}/comment with an ADF body; 201 on success.
     const response = await this.requester().requestJira(

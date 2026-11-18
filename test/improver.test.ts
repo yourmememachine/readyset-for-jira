@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   applyImprovement,
+  applySummary,
   improvementContentHash,
   improveIssue,
+  improveSummary,
   type ImproverDeps,
 } from '../src/functions/improver';
 import { buildAdfFromSections, extractTextFromAdf } from '../src/lib/adf';
@@ -432,5 +434,155 @@ describe('Apply permission gate + richer audit comment (Wave 2)', () => {
     expect(commentText).toContain('Now passing:');
     expect(commentText).toContain('Description is substantial');
     expect(commentText).toContain('Acceptance criteria present');
+  });
+});
+
+describe('AC-only Improve (Wave 3)', () => {
+  const AC_MARKDOWN = [
+    '## Acceptance criteria',
+    '- Requests beyond quota return HTTP 429 with a Retry-After header.',
+    '- Quota is configurable per API key without a deploy.',
+  ].join('\n');
+
+  function issueWithSections(key = 'RS-3'): RawJiraIssue {
+    const raw = makeRawMessyIssue(key);
+    raw.fields.summary = 'Gateway limiter';
+    raw.fields.description = buildAdfFromSections([
+      {
+        heading: 'Goal',
+        paragraphs: [
+          'Add token-bucket rate limiting to the public API gateway so a single noisy integration cannot degrade latency for every other merchant using the platform, with per-key quotas and clear rejection signals.',
+        ],
+      },
+      { heading: 'Notes', paragraphs: ['Roll out behind a feature flag first.'] },
+    ]);
+    return raw;
+  }
+
+  it('drafts a single AC section and projects the merged score', async () => {
+    const llm = new FakeLlmClient(() => AC_MARKDOWN);
+    const { deps } = makeImproverDeps([issueWithSections()], llm);
+    const payload = await improveIssue(deps, { issueKey: 'RS-3', mode: 'ac-only' });
+    expect(payload.mode).toBe('ac-only');
+    expect(payload.source).toBe('llm');
+    expect(payload.sections).toHaveLength(1);
+    expect(payload.sections[0]?.heading).toBe('Acceptance criteria');
+    expect(payload.currentSections.map((section) => section.heading)).toEqual(['Goal', 'Notes']);
+    // The existing description already passes description depth; adding
+    // real criteria flips the AC check too.
+    expect(payload.projectedScore).toBeGreaterThan(payload.currentScore);
+    expect(llm.calls[0]?.mode).toBe('ac-only');
+  });
+
+  it('apply merges the AC section and leaves the other sections untouched', async () => {
+    const llm = new FakeLlmClient(() => AC_MARKDOWN);
+    const { deps, jira } = makeImproverDeps([issueWithSections()], llm);
+    const payload = await improveIssue(deps, { issueKey: 'RS-3', mode: 'ac-only' });
+    const applied = await applyImprovement(deps, {
+      issueKey: 'RS-3',
+      contentHash: payload.contentHash,
+    });
+    expect(applied.newScore).toBe(payload.projectedScore);
+    const written = extractTextFromAdf(jira.updateDescriptionCalls[0]?.description);
+    expect(written).toContain('Add token-bucket rate limiting');
+    expect(written).toContain('Roll out behind a feature flag first.');
+    expect(written).toContain('Requests beyond quota return HTTP 429');
+    const commentText = extractTextFromAdf(jira.addCommentCalls[0]?.body);
+    expect(commentText).toContain('Acceptance criteria improved with ReadySet');
+  });
+
+  it('an AC-only draft and a full draft of the same issue do not collide', async () => {
+    const llm = new FakeLlmClient((request) =>
+      request.mode === 'ac-only' ? AC_MARKDOWN : GOOD_MARKDOWN,
+    );
+    const { deps } = makeImproverDeps([makeRawMessyIssue()], llm);
+    const full = await improveIssue(deps, { issueKey: 'RS-3' });
+    const acOnly = await improveIssue(deps, { issueKey: 'RS-3', mode: 'ac-only' });
+    expect(full.contentHash).not.toBe(acOnly.contentHash);
+    expect(full.sections.length).toBeGreaterThan(1);
+    expect(acOnly.sections).toHaveLength(1);
+  });
+});
+
+describe('Improve & Assign (Wave 3)', () => {
+  it('assigns to the current user after a successful apply when requested', async () => {
+    const llm = new FakeLlmClient(() => GOOD_MARKDOWN);
+    const { deps, jira } = makeImproverDeps([makeRawMessyIssue()], llm);
+    const payload = await improveIssue(deps, { issueKey: 'RS-3' });
+    const applied = await applyImprovement(deps, {
+      issueKey: 'RS-3',
+      contentHash: payload.contentHash,
+      assignToMe: true,
+    });
+    expect(applied.assigned).toBe(true);
+    expect(jira.assignToCurrentUserCalls).toEqual(['RS-3']);
+  });
+
+  it('an assignment failure is reported, never thrown over a successful apply', async () => {
+    const llm = new FakeLlmClient(() => GOOD_MARKDOWN);
+    const { deps, jira } = makeImproverDeps([makeRawMessyIssue()], llm);
+    jira.assignError = new Error('no Assign permission');
+    const payload = await improveIssue(deps, { issueKey: 'RS-3' });
+    const applied = await applyImprovement(deps, {
+      issueKey: 'RS-3',
+      contentHash: payload.contentHash,
+      assignToMe: true,
+    });
+    expect(applied.newScore).toBe(60);
+    expect(applied.assigned).toBe(false);
+    expect(applied.assignError).toContain('no Assign permission');
+  });
+});
+
+describe('Summary Improve (Wave 3)', () => {
+  it('drafts and applies an LLM summary, rescoring the issue', async () => {
+    const llm = new FakeLlmClient((request) =>
+      request.kind === 'summary'
+        ? 'Add token-bucket rate limiting to the public API gateway'
+        : GOOD_MARKDOWN,
+    );
+    const { deps, jira } = makeImproverDeps([makeRawMessyIssue()], llm);
+    const payload = await improveSummary(deps, { issueKey: 'RS-3' });
+    expect(payload.source).toBe('llm');
+    expect(payload.currentSummary).toBe('Fix bug');
+    expect(payload.suggestedSummary).toBe('Add token-bucket rate limiting to the public API gateway');
+    expect(payload.projectedScore).toBeGreaterThan(payload.currentScore);
+    const applied = await applySummary(deps, {
+      issueKey: 'RS-3',
+      contentHash: payload.contentHash,
+    });
+    expect(jira.updateSummaryCalls).toEqual([
+      { issueKey: 'RS-3', summary: 'Add token-bucket rate limiting to the public API gateway' },
+    ]);
+    expect(applied.newScore).toBe(payload.projectedScore);
+    const commentText = extractTextFromAdf(jira.addCommentCalls[0]?.body);
+    expect(commentText).toContain('Summary improved with ReadySet');
+  });
+
+  it('derives a summary from the description when the LLM is unavailable', async () => {
+    const llm = new FakeLlmClient(() => {
+      throw new Error('LLM unavailable');
+    });
+    const raw = makeRawMessyIssue();
+    raw.fields.description = buildAdfFromSections([
+      {
+        heading: 'Goal',
+        paragraphs: [
+          'Add token-bucket rate limiting to the public API gateway so noisy integrations cannot degrade latency for everyone else on the platform.',
+        ],
+      },
+    ]);
+    const { deps } = makeImproverDeps([raw], llm);
+    const payload = await improveSummary(deps, { issueKey: 'RS-3' });
+    expect(payload.source).toBe('template');
+    expect(payload.suggestedSummary).toContain('Add token-bucket rate limiting');
+  });
+
+  it('refuses honestly when the issue has no text to derive a summary from', async () => {
+    const llm = new FakeLlmClient(() => {
+      throw new Error('LLM unavailable');
+    });
+    const { deps } = makeImproverDeps([makeRawMessyIssue()], llm);
+    await expect(improveSummary(deps, { issueKey: 'RS-3' })).rejects.toThrow(/not enough text/);
   });
 });

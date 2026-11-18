@@ -31,6 +31,12 @@ defaults.
 - `fetch-fix-first` — a project's lowest-scoring open issues, each
   with its highest-weight failing checks and their one-line fixes.
   Use it for "What should I fix first?"
+- `fetch-suggested-fixes` — a project's single lowest-scoring open
+  issue with every failing check and the exact projected score gain
+  of fixing each one. Use it for "What is the fastest win in ABC?"
+- `fetch-compare-issues` — two issues' scores and the checks where
+  they differ. Use it for "Why does ABC-123 score higher than
+  ABC-124?"
 
 ## How you answer
 

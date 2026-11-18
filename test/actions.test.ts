@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  fetchCompareIssues,
   fetchFixFirst,
   fetchIssueReadiness,
   fetchProjectReadiness,
+  fetchSuggestedFixes,
 } from '../src/functions/actions';
 import { scanProject, type ResolverDeps } from '../src/functions/resolver';
 import { FakeJiraAdapter, type RawJiraIssue } from '../src/lib/jira';
@@ -117,5 +119,56 @@ describe('fetchFixFirst', () => {
     expect(one.issues).toHaveLength(1);
     const clamped = await fetchFixFirst(deps, { projectKey: 'RS', limit: 500 });
     expect(clamped.issues).toHaveLength(3);
+  });
+});
+
+describe('fetchSuggestedFixes (Wave 3)', () => {
+  it('returns the worst issue with every failing check and its exact projected gain', async () => {
+    const { deps } = await makeSeededDeps([
+      makeRawIssue(),
+      makeRawIssueNoEstimate(),
+      makeRawMessyIssue(),
+    ]);
+    const result = await fetchSuggestedFixes(deps, { projectKey: 'RS' });
+    expect(result.found).toBe(true);
+    expect(result.issueKey).toBe('RS-3');
+    expect(result.score).toBe(20);
+    // RS-3 fails 7 checks; the biggest single fix is description or AC (+20).
+    expect(result.fixes?.length).toBe(7);
+    expect(result.fixes?.[0]?.projectedGain).toBe(20);
+    expect(result.fixes?.[0]?.projectedScore).toBe(40);
+    const gains = result.fixes?.map((fix) => fix.projectedGain) ?? [];
+    expect(gains).toEqual([...gains].sort((a, b) => b - a));
+  });
+
+  it('answers found:false for a project with nothing scored', async () => {
+    const { deps } = await makeSeededDeps([]);
+    const result = await fetchSuggestedFixes(deps, { projectKey: 'RS' });
+    expect(result).toEqual({ found: false, projectKey: 'RS' });
+  });
+});
+
+describe('fetchCompareIssues (Wave 3)', () => {
+  it('explains a score gap as the checks where the two issues differ', async () => {
+    const { deps } = await makeSeededDeps([makeRawIssue(), makeRawMessyIssue()]);
+    const result = await fetchCompareIssues(deps, { issueKeyA: 'RS-1', issueKeyB: 'RS-3' });
+    expect(result.found).toBe(true);
+    expect(result.a?.score).toBe(100);
+    expect(result.b?.score).toBe(20);
+    const labels = result.differences?.map((diff) => diff.label) ?? [];
+    expect(labels).toContain('Description is substantial');
+    expect(labels).toContain('Acceptance criteria present');
+    // Priority passes on both — it must NOT appear as a difference.
+    expect(labels).not.toContain('Priority set');
+    const description = result.differences?.find((diff) => diff.label === 'Description is substantial');
+    expect(description?.aPassed).toBe(true);
+    expect(description?.bPassed).toBe(false);
+  });
+
+  it('reports the missing key when either issue was never scored', async () => {
+    const { deps } = await makeSeededDeps([makeRawIssue()]);
+    const result = await fetchCompareIssues(deps, { issueKeyA: 'RS-1', issueKeyB: 'RS-404' });
+    expect(result.found).toBe(false);
+    expect(result.missing).toEqual(['RS-404']);
   });
 });

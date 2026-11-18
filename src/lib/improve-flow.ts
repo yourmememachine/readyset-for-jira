@@ -143,3 +143,45 @@ export function draftSourceLabel(source: DraftSource): string {
     ? 'AI-drafted description'
     : 'Template draft — the AI drafter was unavailable, so the built-in template wrote this instead.';
 }
+
+export type SectionDiffStatus = 'added' | 'removed' | 'changed' | 'same';
+
+export interface SectionDiff {
+  heading: string;
+  status: SectionDiffStatus;
+}
+
+/**
+ * Section-level diff between the current description and a draft
+ * (Wave 3 diff view): which sections the draft adds, drops, rewrites,
+ * or leaves alone. Paragraph-exact comparison — a section counts as
+ * changed when any paragraph differs.
+ */
+export function diffSections(
+  current: Array<{ heading: string; paragraphs: string[] }>,
+  draft: Array<{ heading: string; paragraphs: string[] }>,
+): SectionDiff[] {
+  const key = (heading: string): string => heading.trim().toLowerCase();
+  const currentByKey = new Map(current.map((section) => [key(section.heading), section]));
+  const draftKeys = new Set(draft.map((section) => key(section.heading)));
+  const diffs: SectionDiff[] = [];
+  for (const section of draft) {
+    const existing = currentByKey.get(key(section.heading));
+    if (!existing) {
+      diffs.push({ heading: section.heading, status: 'added' });
+    } else if (
+      existing.paragraphs.length !== section.paragraphs.length ||
+      existing.paragraphs.some((paragraph, index) => paragraph !== section.paragraphs[index])
+    ) {
+      diffs.push({ heading: section.heading, status: 'changed' });
+    } else {
+      diffs.push({ heading: section.heading, status: 'same' });
+    }
+  }
+  for (const section of current) {
+    if (!draftKeys.has(key(section.heading)) && section.heading.trim().length > 0) {
+      diffs.push({ heading: section.heading, status: 'removed' });
+    }
+  }
+  return diffs;
+}

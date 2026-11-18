@@ -219,3 +219,37 @@ export function buildTemplateDraft(
   }
   return sections;
 }
+
+/** The Acceptance criteria section of a full template draft (Wave 3 partial Improve). */
+export function templateAcSection(
+  issue: NormalizedIssue,
+  failedChecks: CheckResult[],
+  sectionNames: readonly string[] = DEFAULT_IMPROVE_SECTIONS,
+): DraftSection {
+  const draft = buildTemplateDraft(issue, failedChecks, sectionNames);
+  const ac = draft.find((section) => /^acceptance criteria\b/i.test(section.heading));
+  if (ac) return ac;
+  // Unreachable by construction (the structure always contains an AC
+  // heading) — but never return undefined to a write path.
+  return buildAcceptanceCriteria(issue, cleanLines(issue.descriptionText), 'Acceptance criteria');
+}
+
+const SUMMARY_PLACEHOLDER_RE = /\b(tbd|todo|fixme|placeholder)\b/i;
+
+/**
+ * Derive a specific summary from the issue's own text (Wave 3 summary
+ * Improve, template path): the first sentence of the description,
+ * tidied and length-capped. Returns null when the issue carries no
+ * usable material — an empty issue gets no invented summary.
+ */
+export function buildSummaryFromIssue(issue: NormalizedIssue): string | null {
+  const text = issue.descriptionText.replace(/\s+/g, ' ').trim();
+  if (text.length < 10) return null;
+  const sentenceMatch = text.match(/^[^.!?]{10,197}[.!?]/);
+  let candidate = (sentenceMatch ? sentenceMatch[0] : text.slice(0, 197)).trim();
+  candidate = candidate.replace(/[.!?]+$/, '').trim();
+  if (candidate.length < 10 || candidate.length > 200) return null;
+  if (SUMMARY_PLACEHOLDER_RE.test(candidate)) return null;
+  if (candidate.toLowerCase() === issue.summary.trim().toLowerCase()) return null;
+  return candidate.charAt(0).toUpperCase() + candidate.slice(1);
+}

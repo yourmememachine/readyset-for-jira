@@ -17,12 +17,21 @@ import { ForgeKV } from './lib/forge-store';
 import { ScoreStore } from './lib/store';
 import type { ProjectSettings } from './lib/types';
 import {
+  fetchCompareIssues,
   fetchFixFirst,
   fetchIssueReadiness,
   fetchProjectReadiness,
+  fetchSuggestedFixes,
 } from './functions/actions';
+import { bulkImproveTemplates } from './functions/bulk-improve';
 import { handleIssueEvent, type JiraIssueEvent } from './functions/events';
-import { applyImprovement, improveIssue, type ImproverDeps } from './functions/improver';
+import {
+  applyImprovement,
+  applySummary,
+  improveIssue,
+  improveSummary,
+  type ImproverDeps,
+} from './functions/improver';
 import { handleScheduledRescan } from './functions/rescan';
 import {
   continueScanProject,
@@ -89,14 +98,32 @@ resolver.define(
 
 resolver.define(
   'improveIssue',
-  async (request: { payload: { issueKey: string } }) =>
+  async (request: { payload: { issueKey: string; mode?: 'full' | 'ac-only' } }) =>
     improveIssue(improverDeps, request.payload),
 );
 
 resolver.define(
   'applyImprovement',
-  async (request: { payload: { issueKey: string; contentHash: string } }) =>
+  async (request: { payload: { issueKey: string; contentHash: string; assignToMe?: boolean } }) =>
     applyImprovement(improverDeps, request.payload),
+);
+
+resolver.define(
+  'improveSummary',
+  async (request: { payload: { issueKey: string } }) =>
+    improveSummary(improverDeps, request.payload),
+);
+
+resolver.define(
+  'applySummary',
+  async (request: { payload: { issueKey: string; contentHash: string } }) =>
+    applySummary(improverDeps, request.payload),
+);
+
+resolver.define(
+  'bulkImprove',
+  async (request: { payload: { projectKey: string } }) =>
+    bulkImproveTemplates(improverDeps, request.payload),
 );
 
 export const handler = resolver.getDefinitions();
@@ -116,6 +143,17 @@ export async function fetchProjectReadinessAction(payload: { projectKey: string 
 
 export async function fetchFixFirstAction(payload: { projectKey: string; limit?: number }) {
   return fetchFixFirst(backgroundDeps, payload);
+}
+
+export async function fetchSuggestedFixesAction(payload: { projectKey: string }) {
+  return fetchSuggestedFixes(backgroundDeps, payload);
+}
+
+export async function fetchCompareIssuesAction(payload: {
+  issueKeyA: string;
+  issueKeyB: string;
+}) {
+  return fetchCompareIssues(backgroundDeps, payload);
 }
 
 /** Trigger entry point: issue created/updated/deleted events. */
