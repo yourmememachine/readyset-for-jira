@@ -17,12 +17,13 @@ import { chat } from '@forge/llm';
 import { buildDraftPrompt, type DraftRequest, type LlmClient } from './llm';
 
 /**
- * The Haiku-tier model id. Phase 2b verifies the exact enabled id
- * against the live model list (`list()` from `@forge/llm`) and the
- * manifest's `llm` enablement before the first deploy — this constant
- * is the single place to adjust.
+ * The Haiku-tier model id. Verified live in phase 2b (2026-11-17):
+ * the undated `claude-haiku-4-5` is rejected by the API with
+ * FORGE_LLMS_MODEL_NOT_FOUND; the supported Haiku id is the dated
+ * variant below (Forge LLMs models reference, status ACTIVE). This
+ * constant is the single place to adjust when the model list changes.
  */
-export const IMPROVER_MODEL = 'claude-haiku-4-5';
+export const IMPROVER_MODEL = 'claude-haiku-4-5-20251001';
 
 /** Per-draft output cap from the design (≤ ~600 tokens). */
 const MAX_COMPLETION_TOKENS = 600;
