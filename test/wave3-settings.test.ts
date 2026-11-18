@@ -155,3 +155,35 @@ describe('cross-review fixes (Wave 3 review)', () => {
     expect(await store.getScore('RS-3')).toBeUndefined();
   });
 });
+
+describe('analytics drafts/applies counters (Wave 3 review)', () => {
+  it('counts drafts and applies only while analytics is enabled', async () => {
+    const { deps, store } = makeDeps([makeRawMessyIssue('RS-3')]);
+    const { improveIssue, applyImprovement } = await import('../src/functions/improver');
+    const explodingLlm = {
+      async draftDescription(): Promise<string> {
+        throw new Error('no LLM in this test — template path');
+      },
+    };
+    const improverDeps = { ...deps, llm: explodingLlm };
+    // Disabled: a full draft + apply cycle counts nothing.
+    const off = await improveIssue(improverDeps, { issueKey: 'RS-3' });
+    await applyImprovement(improverDeps, { issueKey: 'RS-3', contentHash: off.contentHash });
+    expect(await store.getAnalyticsTotals('RS', 7, FIXED_NOW)).toEqual({
+      scores: 0,
+      drafts: 0,
+      applies: 0,
+    });
+    // Enabled (fresh issue state via a new deps/store pair is not
+    // needed: RS-3's description changed, so a new draft is generated).
+    await saveSettings(deps, {
+      projectKey: 'RS',
+      settings: { ...DEFAULT_SETTINGS, analyticsEnabled: true },
+    });
+    const on = await improveIssue(improverDeps, { issueKey: 'RS-3' });
+    await applyImprovement(improverDeps, { issueKey: 'RS-3', contentHash: on.contentHash });
+    const totals = await store.getAnalyticsTotals('RS', 7, FIXED_NOW);
+    expect(totals.drafts).toBe(1);
+    expect(totals.applies).toBe(1);
+  });
+});

@@ -104,8 +104,17 @@ resolver.define(
 
 resolver.define(
   'applyImprovement',
-  async (request: { payload: { issueKey: string; contentHash: string; assignToMe?: boolean } }) =>
-    applyImprovement(improverDeps, request.payload),
+  async (request: {
+    payload: { issueKey: string; contentHash: string; assignToMe?: boolean };
+    context?: { accountId?: string };
+  }) =>
+    applyImprovement(improverDeps, {
+      ...request.payload,
+      // Improve & Assign: the assignee is the invoking user, taken
+      // from the resolver context — no /myself call (it needs a scope
+      // this app does not declare; see forge-jira.ts).
+      accountId: request.context?.accountId,
+    }),
 );
 
 resolver.define(

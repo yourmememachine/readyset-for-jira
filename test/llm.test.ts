@@ -156,4 +156,10 @@ describe('parseSummaryReply (Wave 3)', () => {
     ).toBe('Add token-bucket rate limiting to the API gateway');
     expect(() => parseSummaryReply('Here is a summary for the issue:')).toThrow(/not a usable/);
   });
+
+  it('strips a "Summary:" label instead of discarding the line (live find, 2026-11-18)', () => {
+    expect(parseSummaryReply('Summary: Add token-bucket rate limiting to the API gateway')).toBe(
+      'Add token-bucket rate limiting to the API gateway',
+    );
+  });
 });

@@ -348,7 +348,7 @@ export async function improveIssue(
  */
 export async function applyImprovement(
   deps: ImproverDeps,
-  payload: { issueKey: string; contentHash: string; assignToMe?: boolean },
+  payload: { issueKey: string; contentHash: string; assignToMe?: boolean; accountId?: string },
 ): Promise<ApplyPayload> {
   const readAdapter = deps.jiraUser ?? deps.jira;
   const fieldMap = await getEffectiveFieldMap(deps);
@@ -441,13 +441,20 @@ export async function applyImprovement(
   let assigned: boolean | undefined;
   let assignError: string | undefined;
   if (payload.assignToMe) {
-    try {
-      await (deps.jiraUser ?? deps.jira).assignToCurrentUser(payload.issueKey);
-      assigned = true;
-    } catch (err) {
+    if (!payload.accountId) {
+      // No invocation context to take the user from (e.g. a bulk or
+      // scheduled call): report it, never guess an assignee.
       assigned = false;
-      assignError = err instanceof Error ? err.message : String(err);
-      console.error('ReadySet: assign-after-apply failed:', err);
+      assignError = 'ReadySet could not resolve the current user from the request context.';
+    } else {
+      try {
+        await (deps.jiraUser ?? deps.jira).assignToUser(payload.issueKey, payload.accountId);
+        assigned = true;
+      } catch (err) {
+        assigned = false;
+        assignError = err instanceof Error ? err.message : String(err);
+        console.error('ReadySet: assign-after-apply failed:', err);
+      }
     }
   }
 
@@ -472,7 +479,8 @@ export async function improveSummary(
 ): Promise<SummaryImprovePayload> {
   const adapter = deps.jiraUser ?? deps.jira;
   const fieldMap = await getEffectiveFieldMap(deps);
-  const issue = readCompleteIssue(await adapter.getIssue(payload.issueKey, fieldMap), fieldMap);
+  const raw = await adapter.getIssue(payload.issueKey, fieldMap);
+  const issue = readCompleteIssue(raw, fieldMap);
   const settings = await deps.store.getSettings(issue.projectKey);
   if (isExcluded(issue, settings)) {
     throw new Error(
@@ -499,7 +507,7 @@ export async function improveSummary(
       summary = parseSummaryReply(reply);
     } catch (err) {
       console.error('ReadySet: LLM summary failed, using derived fallback:', err);
-      summary = buildSummaryFromIssue(issue);
+      summary = buildSummaryFromIssue(issue, sectionsFromAdf(raw.fields.description));
       source = 'template';
     }
     if (!summary) {

@@ -170,22 +170,23 @@ export class ForgeJiraAdapter implements JiraAdapter {
     await assertOk(response, `updateSummary(${issueKey})`);
   }
 
-  async assignToCurrentUser(issueKey: string): Promise<void> {
-    // The assignee is the clicking user: resolve their account id and
-    // assign as them (Assign issues permission is theirs to hold).
-    const myselfResponse = await api.asUser().requestJira(route`/rest/api/3/myself`, {
-      headers: { Accept: 'application/json' },
-    });
-    const myself = await readJson<{ accountId?: string }>(myselfResponse, 'assignToCurrentUser');
-    if (!myself.accountId) throw new Error('ReadySet: could not resolve the current user');
-    const response = await api
-      .asUser()
-      .requestJira(route`/rest/api/3/issue/${issueKey}/assignee`, {
+  async assignToUser(issueKey: string, accountId: string): Promise<void> {
+    // The assignee is the clicking user. Their account id comes from
+    // the resolver invocation context (index.ts passes it through) —
+    // NOT from GET /rest/api/3/myself: that endpoint needs the read:me
+    // scope this app does not declare, and the token service refused
+    // it live with NEEDS_AUTHENTICATION_ERR (Wave 3 live verification,
+    // 2026-11-18). The PUT itself runs as the user, so the Assign
+    // issues permission enforced is theirs.
+    const response = await this.requester().requestJira(
+      route`/rest/api/3/issue/${issueKey}/assignee`,
+      {
         method: 'PUT',
         headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ accountId: myself.accountId }),
-      });
-    await assertOk(response, `assignToCurrentUser(${issueKey})`);
+        body: JSON.stringify({ accountId }),
+      },
+    );
+    await assertOk(response, `assignToUser(${issueKey})`);
   }
 
   async addComment(issueKey: string, body: AdfDoc): Promise<void> {

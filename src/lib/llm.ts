@@ -221,13 +221,16 @@ const SUMMARY_PLACEHOLDER_RE = /\b(tbd|todo|fixme|placeholder)\b/i;
  * anything else so the caller falls back to the derived template.
  */
 const SUMMARY_PREAMBLE_RE =
-  /^(here is|here's|here you go|sure|certainly|of course|summary|suggested summary|proposed summary|new summary)\b/i;
+  /^(here is|here's|here you go|sure|certainly|of course)\b/i;
+const SUMMARY_LABEL_RE = /^(suggested summary|proposed summary|new summary|summary)\s*:\s*/i;
 
 export function parseSummaryReply(reply: string): string {
-  // Models sometimes preface the line ("Here is a summary for the
-  // issue:") despite the prompt. A preamble is never the summary:
-  // skip label-style lines and anything ending in a colon, then take
-  // the first usable line (cross-review A5).
+  // Models dress the line up despite the prompt: a "Summary:" label
+  // prefix is stripped (the rest of the line IS the summary), while a
+  // pure preamble line ("Here is a summary for the issue:") is
+  // skipped — it is never the summary (cross-review A5; the label
+  // case was found live, 2026-11-18, when every dressed reply fell
+  // back to the derived summary).
   const lines = reply
     .split('\n')
     .map((candidate) =>
@@ -235,12 +238,17 @@ export function parseSummaryReply(reply: string): string {
         .trim()
         .replace(/^#+\s*/, '')
         .replace(/^["']|["']$/g, '')
+        .trim()
+        .replace(SUMMARY_LABEL_RE, '')
         .trim(),
     )
     .filter((candidate) => candidate.length > 0);
   if (lines.length === 0) throw new Error('ReadySet: LLM summary reply was empty');
   const usable = lines.find(
-    (candidate) => !SUMMARY_PREAMBLE_RE.test(candidate) && !/:$/.test(candidate),
+    (candidate, index) =>
+      !SUMMARY_PREAMBLE_RE.test(candidate) &&
+      // A colon-ended line is a preamble when more text follows it.
+      !(/:$/.test(candidate) && index < lines.length - 1),
   );
   const cleaned = usable ?? '';
   if (cleaned.length < 10 || cleaned.length > 255) {

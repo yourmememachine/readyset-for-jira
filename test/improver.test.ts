@@ -539,9 +539,10 @@ describe('Improve & Assign (Wave 3)', () => {
       issueKey: 'RS-3',
       contentHash: payload.contentHash,
       assignToMe: true,
+      accountId: 'fake-current-user',
     });
     expect(applied.assigned).toBe(true);
-    expect(jira.assignToCurrentUserCalls).toEqual(['RS-3']);
+    expect(jira.assignToUserCalls).toEqual([{ issueKey: 'RS-3', accountId: 'fake-current-user' }]);
   });
 
   it('an assignment failure is reported, never thrown over a successful apply', async () => {
@@ -553,10 +554,26 @@ describe('Improve & Assign (Wave 3)', () => {
       issueKey: 'RS-3',
       contentHash: payload.contentHash,
       assignToMe: true,
+      accountId: 'fake-current-user',
     });
     expect(applied.newScore).toBe(60);
     expect(applied.assigned).toBe(false);
     expect(applied.assignError).toContain('no Assign permission');
+  });
+
+  it('assign without an account id reports the miss and still applies (live-verification fix)', async () => {
+    const llm = new FakeLlmClient(() => GOOD_MARKDOWN);
+    const { deps, jira } = makeImproverDeps([makeRawMessyIssue()], llm);
+    const payload = await improveIssue(deps, { issueKey: 'RS-3' });
+    const applied = await applyImprovement(deps, {
+      issueKey: 'RS-3',
+      contentHash: payload.contentHash,
+      assignToMe: true,
+    });
+    expect(applied.newScore).toBe(60);
+    expect(applied.assigned).toBe(false);
+    expect(applied.assignError).toMatch(/could not resolve the current user/);
+    expect(jira.assignToUserCalls).toEqual([]);
   });
 });
 
@@ -610,6 +627,49 @@ describe('Summary Improve (Wave 3)', () => {
     });
     const { deps } = makeImproverDeps([makeRawMessyIssue()], llm);
     await expect(improveSummary(deps, { issueKey: 'RS-3' })).rejects.toThrow(/not enough text/);
+  });
+
+  it('derives from the first real section sentence — never glued headings, never mid-word (live find, 2026-11-18)', async () => {
+    const llm = new FakeLlmClient(() => {
+      throw new Error('LLM unavailable');
+    });
+    const raw = makeRawMessyIssue();
+    raw.fields.description = buildAdfFromSections([
+      {
+        heading: 'Acceptance criteria',
+        paragraphs: [
+          'The bug is identified and documented with steps to reproduce.',
+          'A fix is implemented that resolves the reported issue.',
+        ],
+      },
+    ]);
+    const { deps } = makeImproverDeps([raw], llm);
+    const payload = await improveSummary(deps, { issueKey: 'RS-3' });
+    expect(payload.source).toBe('template');
+    expect(payload.suggestedSummary).toBe(
+      'The bug is identified and documented with steps to reproduce',
+    );
+  });
+
+  it('truncates a long derivation on a word boundary', async () => {
+    const llm = new FakeLlmClient(() => {
+      throw new Error('LLM unavailable');
+    });
+    const raw = makeRawMessyIssue();
+    const paragraph = 'Improve the gateway rate limiting behaviour for every merchant integration '
+      .repeat(4)
+      .trim();
+    raw.fields.description = buildAdfFromSections([
+      { heading: 'Goal', paragraphs: [paragraph] },
+    ]);
+    const { deps } = makeImproverDeps([raw], llm);
+    const payload = await improveSummary(deps, { issueKey: 'RS-3' });
+    const result = payload.suggestedSummary;
+    expect(result.length).toBeLessThanOrEqual(200);
+    // A true word boundary: the result is a prefix of the paragraph
+    // and the paragraph continues with a space, not a letter.
+    expect(paragraph.startsWith(result)).toBe(true);
+    expect(paragraph.charAt(result.length)).toBe(' ');
   });
 
   it('a cached summary draft reports the LIVE current score, not the draft-time one (A6)', async () => {

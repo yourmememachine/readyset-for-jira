@@ -101,7 +101,7 @@ export interface JiraAdapter {
    * Checked and performed as the user: the assignee is whoever clicked
    * Apply, never the app.
    */
-  assignToCurrentUser(issueKey: string): Promise<void>;
+  assignToUser(issueKey: string, accountId: string): Promise<void>;
   /**
    * Post a comment (ADF body) on an issue. Used by Apply to leave the
    * "improved with ReadySet — readiness X → Y" audit trail.
@@ -460,16 +460,16 @@ export class FakeJiraAdapter implements JiraAdapter {
     issue.fields.summary = summary;
   }
 
-  readonly assignToCurrentUserCalls: string[] = [];
-  /** When set, assignToCurrentUser throws it (best-effort contract tests). */
+  readonly assignToUserCalls: Array<{ issueKey: string; accountId: string }> = [];
+  /** When set, assignToUser throws it (best-effort contract tests). */
   assignError: Error | null = null;
 
-  async assignToCurrentUser(issueKey: string): Promise<void> {
-    this.assignToCurrentUserCalls.push(issueKey);
+  async assignToUser(issueKey: string, accountId: string): Promise<void> {
+    this.assignToUserCalls.push({ issueKey, accountId });
     if (this.assignError) throw this.assignError;
     const issue = this.issues.find((candidate) => candidate.key === issueKey);
     if (!issue) throw new Error(`FakeJiraAdapter: unknown issue ${issueKey}`);
-    issue.fields.assignee = { displayName: 'Current User', accountId: 'fake-current-user' } as never;
+    issue.fields.assignee = { displayName: 'Current User', accountId } as never;
   }
 
   async addComment(issueKey: string, body: AdfDoc): Promise<void> {

@@ -238,15 +238,40 @@ const SUMMARY_PLACEHOLDER_RE = /\b(tbd|todo|fixme|placeholder)\b/i;
 
 /**
  * Derive a specific summary from the issue's own text (Wave 3 summary
- * Improve, template path): the first sentence of the description,
- * tidied and length-capped. Returns null when the issue carries no
- * usable material — an empty issue gets no invented summary.
+ * Improve, template path): the first sentence of the description's
+ * most summary-like section, tidied and length-capped. Sections are
+ * preferred in intro → Goal → Context → other → acceptance-criteria
+ * order, because the flattened description text STARTS with heading
+ * words — the first live derivation (2026-11-18) glued the criteria
+ * together and cut mid-word. Truncation always lands on a word
+ * boundary. Returns null when the issue carries no usable material —
+ * an empty issue gets no invented summary.
  */
-export function buildSummaryFromIssue(issue: NormalizedIssue): string | null {
-  const text = issue.descriptionText.replace(/\s+/g, ' ').trim();
-  if (text.length < 10) return null;
-  const sentenceMatch = text.match(/^[^.!?]{10,197}[.!?]/);
-  let candidate = (sentenceMatch ? sentenceMatch[0] : text.slice(0, 197)).trim();
+export function buildSummaryFromIssue(
+  issue: NormalizedIssue,
+  sections: DraftSection[] = [],
+): string | null {
+  const rank = (heading: string): number => {
+    if (heading.trim() === '') return 0;
+    if (/^(goal|objective|purpose)\b/i.test(heading)) return 1;
+    if (/^(context|background)\b/i.test(heading)) return 2;
+    if (/^acceptance criteria\b/i.test(heading)) return 4;
+    return 3;
+  };
+  const paragraphs = [...sections]
+    .sort((a, b) => rank(a.heading) - rank(b.heading))
+    .flatMap((section) => section.paragraphs)
+    .map((paragraph) => paragraph.replace(/\s+/g, ' ').trim())
+    .filter((paragraph) => paragraph.length >= 10);
+  const source = paragraphs[0] ?? issue.descriptionText.replace(/\s+/g, ' ').trim();
+  if (source.length < 10) return null;
+  const sentenceMatch = source.match(/^[^.!?]{10,}?[.!?](?=\s|$)/);
+  let candidate = (sentenceMatch ? sentenceMatch[0] : source).trim();
+  if (candidate.length > 200) {
+    const cut = candidate.slice(0, 200);
+    const lastSpace = cut.lastIndexOf(' ');
+    candidate = (lastSpace > 10 ? cut.slice(0, lastSpace) : cut).trim();
+  }
   candidate = candidate.replace(/[.!?]+$/, '').trim();
   if (candidate.length < 10 || candidate.length > 200) return null;
   if (SUMMARY_PLACEHOLDER_RE.test(candidate)) return null;
