@@ -109,6 +109,14 @@ export type ScoreSource = 'rest' | 'event';
 /** One point in an issue's score history (upgrade pack, review #3). */
 export interface ScoreHistoryEntry {
   score: number;
+  /**
+   * The grade the score carried under the thresholds in force when
+   * it was computed — a historical fact, kept for trend reporting
+   * ("became Ready this week"). Live surfaces re-derive the grade
+   * from the score under CURRENT thresholds, so after a threshold
+   * change the same score value can legitimately show a different
+   * grade in history than on the panel (upgrade cross-review A6).
+   */
   grade: Grade;
   /** ISO timestamp of the rescore that produced this value. */
   at: string;

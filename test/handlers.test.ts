@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { handleIssueEvent, type JiraIssueEvent } from '../src/functions/events';
+import { handleIssueEvent, resolveEventIssue, type JiraIssueEvent } from '../src/functions/events';
 import { handleScheduledRescan } from '../src/functions/rescan';
 import {
   continueScanProject,
@@ -736,5 +736,57 @@ describe('entity property + panel history (upgrade pack)', () => {
     const after = await getIssuePanel(deps, { issueKey: 'RS-3' });
     expect(after.score).toBe(100);
     expect(after.history.map((entry) => entry.score)).toEqual([20, 100]);
+  });
+});
+
+describe('upgrade cross-review fixes (A1 event type gate, B2 property skip)', () => {
+  it('A1: a complete event payload without issuetype classifies as refetch, never merged', () => {
+    const event = v2Event(makeRawIssue({ issuetype: { name: 'Bug' } }, 'RS-11'));
+    delete event.issue.fields.issuetype;
+    expect(resolveEventIssue(event).kind).toBe('refetch');
+  });
+
+  it('A1: a typeless bug event refetches and scores WITH the bug pack (91, not 100)', async () => {
+    const restRaw = makeRawIssue({ issuetype: { name: 'Bug' } }, 'RS-11');
+    const { deps, store, jira } = makeDeps([restRaw]);
+    const event = v2Event(restRaw);
+    delete event.issue.fields.issuetype;
+    const result = await handleIssueEvent(deps, event);
+    expect(result).toEqual({ handled: true, issueKey: 'RS-11' });
+    expect(jira.getIssueCalls).toEqual(['RS-11']);
+    const record = await store.getScore('RS-11');
+    expect(record?.source).toBe('rest');
+    expect(record?.score).toBe(91);
+    expect(record?.checks.find((check) => check.id === 'repro-steps')?.passed).toBe(false);
+  });
+
+  it('A1: a refetch that still lacks issuetype keeps the stored score (nothing written)', async () => {
+    const restRaw = makeRawIssue({}, 'RS-12');
+    delete restRaw.fields.issuetype;
+    const { deps, store, jira } = makeDeps([restRaw]);
+    const event = v2Event(restRaw);
+    const result = await handleIssueEvent(deps, event);
+    expect(result.handled).toBe(false);
+    expect(jira.getIssueCalls).toEqual(['RS-12']);
+    expect(await store.getScore('RS-12')).toBeUndefined();
+  });
+
+  it('B2: an unchanged rescore does not rewrite the entity property; a changed one does', async () => {
+    const raw = makeRawIssue();
+    const { deps, jira } = makeDeps([raw]);
+    await getIssuePanel(deps, { issueKey: 'RS-1' });
+    expect(jira.setScorePropertyCalls).toHaveLength(1);
+    // Same content, new `updated` stamp: forces a rescore, same score.
+    raw.fields.updated = '2026-11-17T13:00:00.000Z';
+    const rescored = await getIssuePanel(deps, { issueKey: 'RS-1' });
+    expect(rescored.fromCache).toBe(false);
+    expect(rescored.score).toBe(100);
+    expect(jira.setScorePropertyCalls).toHaveLength(1);
+    // Content change that moves the score: the property is rewritten.
+    raw.fields.description = null;
+    raw.fields.updated = '2026-11-17T14:00:00.000Z';
+    const changed = await getIssuePanel(deps, { issueKey: 'RS-1' });
+    expect(changed.score).toBeLessThan(100);
+    expect(jira.setScorePropertyCalls).toHaveLength(2);
   });
 });

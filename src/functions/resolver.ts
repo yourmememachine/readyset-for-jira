@@ -179,11 +179,20 @@ export async function scoreAndStore(
   source: ScoreSource,
 ): Promise<StoredScore> {
   const record = toStoredScore(issue, settings, fieldMap, source, deps.now ? deps.now() : new Date());
+  const previous = await deps.store.getScore(record.issueKey);
   await deps.store.saveScore(record);
   // Entity property (upgrade pack, review #2): keep the JQL-searchable
   // score in step with the stored record. Best-effort — a failed
   // property write is logged and never fails the scoring path; the
-  // next rescore rewrites it.
+  // next rescore rewrites it. Skipped when score and grade are
+  // unchanged (upgrade cross-review B2/A5): scans and the nightly
+  // rescan rescore everything, and an unconditional serial PUT per
+  // issue would eat the invocation budget and Jira rate limits for
+  // no change in the searchable state. With the skip, the property's
+  // updatedAt means "score last changed".
+  if (previous && previous.score === record.score && previous.grade === record.grade) {
+    return record;
+  }
   try {
     await deps.jira.setScoreProperty(record.issueKey, {
       score: record.score,

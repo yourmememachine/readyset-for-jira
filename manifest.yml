@@ -35,7 +35,8 @@ modules:
   # Entity property (upgrade pack, review #2): every rescore writes
   # { score, grade, updatedAt } to the issue's `readyset` property;
   # these extractions make it searchable from JQL, boards and filters
-  # as issue.property[readysetScore] / issue.property[readysetGrade].
+  # as `readysetScore < 60` (alias form) or
+  # `issue.property['readyset'].score < 60` (full-path form).
   jira:entityProperty:
     - key: readyset-score-property
       propertyKey: readyset

@@ -34,7 +34,7 @@ import ForgeReconciler, {
 } from '@forge/react';
 import type { ApplyPayload, ImprovePayload } from '../functions/improver';
 import type { IssuePanelPayload } from '../functions/resolver';
-import { nextFixFor } from '../lib/rubric';
+import { nextFixFor, projectedScoreIfFixed } from '../lib/rubric';
 import type { ScoreHistoryEntry } from '../lib/types';
 import {
   applyFailed,
@@ -308,6 +308,7 @@ function IssueContextApp() {
   }
 
   const nextFix = nextFixFor(data.checks);
+  const nextFixProjected = nextFix ? projectedScoreIfFixed(data.checks, nextFix.id) : null;
 
   return (
     <Box padding="space.200">
@@ -320,8 +321,8 @@ function IssueContextApp() {
         </Inline>
         <ProgressBar value={data.score / 100} />
         {historyLine(data.history)}
-        {nextFix ? (
-          <SectionMessage title={`Fix this next: ${nextFix.label} (+${nextFix.weight} pts)`} appearance="information">
+        {nextFix && nextFixProjected !== null ? (
+          <SectionMessage title={`Fix this next: ${nextFix.label} (+${nextFixProjected - data.score} pts → ${nextFixProjected})`} appearance="information">
             <Text>{nextFix.fixHint}</Text>
           </SectionMessage>
         ) : null}

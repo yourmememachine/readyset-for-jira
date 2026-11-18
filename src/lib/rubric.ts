@@ -335,28 +335,49 @@ function checkDueDate(issue: NormalizedIssue): CheckResult {
   );
 }
 
-/** A line that opens a steps-to-reproduce section (bug pack, v3). */
-const REPRO_HEADING_RE =
-  /^\s{0,3}(?:#{1,6}\s*)?(steps to reproduce|reproduction steps|how to reproduce|repro steps)\b[:\s]*(.*)$/i;
+/**
+ * A line that opens a steps-to-reproduce section (bug pack, v3).
+ * Two shapes count — a markdown heading whose text starts with the
+ * phrase, or a plain label line: the phrase alone, or the phrase
+ * followed by a colon and an inline start. A prose sentence that
+ * merely begins with the words ("Steps to reproduce the issue are
+ * unknown…") is NOT a heading (upgrade cross-review A3): without a
+ * colon or heading marks it is a sentence, not a section label.
+ */
+const REPRO_HEADING_MD_RE =
+  /^\s{0,3}#{1,6}\s*(steps to reproduce|reproduction steps|how to reproduce|repro steps)\b[:\s]*(.*)$/i;
+const REPRO_HEADING_PLAIN_RE =
+  /^\s{0,3}(steps to reproduce|reproduction steps|how to reproduce|repro steps)\s*(?::\s*(.*))?$/i;
 
 /** Body of a steps-to-reproduce section, mirroring the AC extractor. */
 function reproSectionBody(descriptionText: string): string | null {
   const lines = descriptionText.split('\n');
   for (let i = 0; i < lines.length; i += 1) {
-    const heading = (lines[i] ?? '').match(REPRO_HEADING_RE);
+    const line = lines[i] ?? '';
+    const heading = line.match(REPRO_HEADING_MD_RE) ?? line.match(REPRO_HEADING_PLAIN_RE);
     if (!heading) continue;
     const bodyLines: string[] = [];
     const inline = (heading[2] ?? '').trim();
     if (inline) bodyLines.push(inline);
     for (let j = i + 1; j < lines.length; j += 1) {
       const next = lines[j] ?? '';
-      if (HEADING_LINE_RE.test(next) || REPRO_HEADING_RE.test(next)) break;
+      if (
+        HEADING_LINE_RE.test(next) ||
+        REPRO_HEADING_MD_RE.test(next) ||
+        REPRO_HEADING_PLAIN_RE.test(next)
+      ) {
+        break;
+      }
       bodyLines.push(next);
     }
     return bodyLines.join('\n').trim();
   }
   return null;
 }
+
+/** Line-anchored "Expected:" / "Actual:" labels (upgrade review A4). */
+const EXPECTED_LABEL_RE = /(^|\n)\s*expected\s*[:\-–]/i;
+const ACTUAL_LABEL_RE = /(^|\n)\s*actual\s*[:\-–]/i;
 
 /**
  * Bug pack (upgrade pack, review #1): bug-type issues must document how
@@ -373,7 +394,11 @@ function checkReproSteps(issue: NormalizedIssue): CheckResult | null {
     return result('repro-steps', true, 'Reproduction steps are documented.', '');
   }
   const text = issue.descriptionText;
-  if (/\bexpected\b/i.test(text) && /\bactual\b/i.test(text) && hasMeaningfulContent(text)) {
+  if (
+    EXPECTED_LABEL_RE.test(text) &&
+    ACTUAL_LABEL_RE.test(text) &&
+    hasMeaningfulContent(text)
+  ) {
     return result(
       'repro-steps',
       true,
@@ -453,4 +478,21 @@ export function nextFixFor(checks: CheckResult[]): CheckResult | null {
     if (best === null || check.weight > best.weight) best = check;
   }
   return best;
+}
+
+/**
+ * The score an issue would carry if exactly one check flipped to
+ * passing, computed with scoreIssue's own renormalization and
+ * rounding (upgrade cross-review A2 — the panel's "fix this next"
+ * gain must be the real renormalized gain, not the raw weight: on a
+ * bug's 110-point denominator a 10-point check gains 9).
+ */
+export function projectedScoreIfFixed(checks: CheckResult[], checkId: CheckId): number {
+  const totalWeight = checks.reduce((sum, check) => sum + check.weight, 0);
+  if (totalWeight === 0) return 0;
+  const earnedWeight = checks.reduce(
+    (sum, check) => sum + (check.passed || check.id === checkId ? check.weight : 0),
+    0,
+  );
+  return Math.round((100 * earnedWeight) / totalWeight);
 }

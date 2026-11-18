@@ -93,7 +93,16 @@ export function resolveEventIssue(event: JiraIssueEvent): EventIssueResolution {
     typeof event.customFields === 'object';
   if (!hasCustomFields) return { kind: 'refetch' };
   const merged: RawJiraIssue = { ...raw, fields: { ...fields, ...event.customFields } };
-  return isScoreablePayload(merged) ? { kind: 'merged', raw: merged } : { kind: 'refetch' };
+  // The merged payload may only be scored directly when it also
+  // carries `issuetype`: the field is gate-exempt (its absence must
+  // never refuse a payload outright), but scoring without it would
+  // silently drop the bug pack and mint an inflated score that the
+  // cache early-exits then freeze (upgrade cross-review A1). A
+  // missing type therefore takes the refetch path, whose REST
+  // request explicitly asks for the field (fieldsFor).
+  return isScoreablePayload(merged) && merged.fields.issuetype !== undefined
+    ? { kind: 'merged', raw: merged }
+    : { kind: 'refetch' };
 }
 
 export async function handleIssueEvent(
@@ -142,7 +151,10 @@ export async function handleIssueEvent(
       );
       return { handled: false };
     }
-    if (!isScoreablePayload(fetched)) {
+    if (!isScoreablePayload(fetched) || fetched.fields.issuetype === undefined) {
+      // A refetch that still lacks a gated field — or the issue type,
+      // without which a bug would be scored without its pack
+      // (upgrade cross-review A1) — keeps the stored score.
       console.error(
         `ReadySet: event refetch for ${issueKey} returned an incomplete payload ` +
           `(missing: ${missingScoringFields(fetched, fieldMap).join(', ')}); keeping the stored score`,

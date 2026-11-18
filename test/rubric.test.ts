@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_SETTINGS } from '../src/lib/rubric-config';
-import { gradeForScore, nextFixFor, scoreIssue } from '../src/lib/rubric';
+import { gradeForScore, nextFixFor, projectedScoreIfFixed, scoreIssue } from '../src/lib/rubric';
 import type { CheckId, ProjectSettings } from '../src/lib/types';
 import { LONG_DESCRIPTION, makeEmptyIssue, makeIssue } from './fixtures';
 
@@ -358,7 +358,7 @@ describe('bug pack: repro-steps (upgrade pack, rubric v3)', () => {
       makeIssue({
         issueType: 'bug',
         descriptionText:
-          LONG_DESCRIPTION + '\n\nExpected: quota errors are per key. Actual: one key throttles all tenants.',
+          LONG_DESCRIPTION + '\n\nExpected: quota errors are per key.\nActual: one key throttles all tenants.',
       }),
     );
     expect(result.checks.find((check) => check.id === 'repro-steps')?.passed).toBe(true);
@@ -406,5 +406,56 @@ describe('nextFixFor (upgrade pack, review #6)', () => {
 
   it('returns null when nothing is failing', () => {
     expect(nextFixFor(scoreIssue(makeIssue()).checks)).toBeNull();
+  });
+});
+
+describe('repro-steps strictness (upgrade cross-review A3/A4)', () => {
+  it('a prose sentence beginning with the phrase is not a steps section', () => {
+    const result = scoreIssue(
+      makeIssue({
+        issueType: 'Bug',
+        descriptionText:
+          LONG_DESCRIPTION +
+          '\n\nSteps to reproduce the issue are unknown; the reporter has been asked for details.',
+      }),
+    );
+    expect(result.checks.find((check) => check.id === 'repro-steps')?.passed).toBe(false);
+  });
+
+  it('the words expected/actual scattered in prose do not pass the pairing branch', () => {
+    const result = scoreIssue(
+      makeIssue({
+        issueType: 'Bug',
+        descriptionText:
+          LONG_DESCRIPTION +
+          '\n\nThe gateway returns the expected quota headers, but the actual limiting never engages under load.',
+      }),
+    );
+    expect(result.checks.find((check) => check.id === 'repro-steps')?.passed).toBe(false);
+  });
+
+  it('a markdown steps heading passes', () => {
+    const result = scoreIssue(
+      makeIssue({
+        issueType: 'Bug',
+        descriptionText:
+          LONG_DESCRIPTION + '\n\n## Steps to reproduce\n1. Send 200 rps with one key.\n2. Watch tenant latency climb.',
+      }),
+    );
+    expect(result.checks.find((check) => check.id === 'repro-steps')?.passed).toBe(true);
+  });
+});
+
+describe('projectedScoreIfFixed (upgrade cross-review A2)', () => {
+  it('reports the real renormalized gain on a bug denominator (110)', () => {
+    const result = scoreIssue(makeIssue({ issueType: 'Bug' }));
+    expect(result.score).toBe(91);
+    expect(projectedScoreIfFixed(result.checks, 'repro-steps')).toBe(100);
+  });
+
+  it('matches scoreIssue math on the standard denominator', () => {
+    const result = scoreIssue(makeEmptyIssue());
+    expect(result.score).toBe(15);
+    expect(projectedScoreIfFixed(result.checks, 'description')).toBe(35);
   });
 });
