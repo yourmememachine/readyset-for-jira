@@ -38,6 +38,7 @@ export function makeIssue(overrides: Partial<NormalizedIssue> = {}): NormalizedI
     dueDate: null,
     statusName: 'To Do',
     statusCategory: 'new',
+    issueType: 'Story',
     updated: '2026-11-17T10:00:00.000Z',
     ...overrides,
   };
@@ -100,6 +101,7 @@ export function makeRawIssue(overrides: Partial<RawJiraIssue['fields']> = {}, ke
       // real shape.
       timeoriginalestimate: null,
       status: { name: 'To Do', statusCategory: { key: 'new' } },
+      issuetype: { name: 'Story' },
       project: { key: 'RS' },
       updated: '2026-11-17T10:00:00.000Z',
       customfield_10016: 3,

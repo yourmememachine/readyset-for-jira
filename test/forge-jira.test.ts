@@ -142,3 +142,22 @@ describe('ForgeJiraAdapter (mocked @forge/api)', () => {
     await expect(adapter.getIssue('RS-1')).rejects.not.toThrow(/SECRET-DETAIL/);
   });
 });
+
+describe('ForgeJiraAdapter setScoreProperty (upgrade pack)', () => {
+  it('PUTs the score object to the issue properties endpoint', async () => {
+    const adapter = new ForgeJiraAdapter();
+    await adapter.setScoreProperty('RS-1', {
+      score: 60,
+      grade: 'almost',
+      updatedAt: '2026-11-17T10:05:00.000Z',
+    });
+    const request = state.requests[state.requests.length - 1];
+    expect(request?.url).toBe('/rest/api/3/issue/RS-1/properties/readyset');
+    expect(request?.options?.method).toBe('PUT');
+    expect(JSON.parse(request?.options?.body ?? '{}')).toEqual({
+      score: 60,
+      grade: 'almost',
+      updatedAt: '2026-11-17T10:05:00.000Z',
+    });
+  });
+});

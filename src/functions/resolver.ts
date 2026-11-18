@@ -42,6 +42,7 @@ import type {
   NormalizedIssue,
   ProjectSettings,
   ProjectStats,
+  ScoreHistoryEntry,
   ScoreSource,
   StoredScore,
 } from '../lib/types';
@@ -69,6 +70,8 @@ export interface IssuePanelPayload {
   checks: CheckResult[];
   computedAt: string;
   fromCache: boolean;
+  /** Score history, oldest first (upgrade pack); empty when unknown. */
+  history: ScoreHistoryEntry[];
 }
 
 export interface ProjectDashboardPayload {
@@ -119,6 +122,7 @@ export function settingsFingerprint(
     almost: settings.almostThreshold,
     estimate: settings.checksEnabled.estimate,
     dueDate: settings.checksEnabled['due-date'],
+    reproSteps: settings.checksEnabled['repro-steps'],
     fieldMap,
   });
 }
@@ -176,6 +180,23 @@ export async function scoreAndStore(
 ): Promise<StoredScore> {
   const record = toStoredScore(issue, settings, fieldMap, source, deps.now ? deps.now() : new Date());
   await deps.store.saveScore(record);
+  // Entity property (upgrade pack, review #2): keep the JQL-searchable
+  // score in step with the stored record. Best-effort — a failed
+  // property write is logged and never fails the scoring path; the
+  // next rescore rewrites it.
+  try {
+    await deps.jira.setScoreProperty(record.issueKey, {
+      score: record.score,
+      grade: gradeForScore(record.score, settings),
+      updatedAt: record.computedAt,
+    });
+  } catch (error) {
+    console.warn(
+      `ReadySet: score property write failed for ${record.issueKey}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
   return record;
 }
 
@@ -191,6 +212,7 @@ function panelPayload(record: StoredScore, settings: ProjectSettings, fromCache:
     checks: record.checks,
     computedAt: record.computedAt,
     fromCache,
+    history: record.history ?? [],
   };
 }
 

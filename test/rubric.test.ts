@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_SETTINGS } from '../src/lib/rubric-config';
-import { gradeForScore, scoreIssue } from '../src/lib/rubric';
+import { gradeForScore, nextFixFor, scoreIssue } from '../src/lib/rubric';
 import type { CheckId, ProjectSettings } from '../src/lib/types';
 import { LONG_DESCRIPTION, makeEmptyIssue, makeIssue } from './fixtures';
 
@@ -294,7 +294,7 @@ describe('cross-review round 3 — rubric regressions', () => {
 describe('settings: toggles and thresholds', () => {
   it('renormalizes to 100 when the only failing check is disabled', () => {
     const issue = makeIssue({ storyPoints: null, originalEstimateSeconds: null });
-    const result = scoreIssue(issue, settings({ checksEnabled: { estimate: false, 'due-date': true } }));
+    const result = scoreIssue(issue, settings({ checksEnabled: { estimate: false, 'due-date': true, 'repro-steps': true } }));
     expect(result.score).toBe(100);
     expect(result.checks.find((candidate) => candidate.id === 'estimate')).toBeUndefined();
     expect(result.checks).toHaveLength(9);
@@ -302,7 +302,7 @@ describe('settings: toggles and thresholds', () => {
 
   it('renormalizes the due-date check the same way', () => {
     const issue = makeIssue({ priority: 'Highest', dueDate: null });
-    const result = scoreIssue(issue, settings({ checksEnabled: { estimate: true, 'due-date': false } }));
+    const result = scoreIssue(issue, settings({ checksEnabled: { estimate: true, 'due-date': false, 'repro-steps': true } }));
     expect(result.score).toBe(100);
   });
 
@@ -319,5 +319,92 @@ describe('settings: toggles and thresholds', () => {
     expect(gradeForScore(79, DEFAULT_SETTINGS)).toBe('almost');
     expect(gradeForScore(60, DEFAULT_SETTINGS)).toBe('almost');
     expect(gradeForScore(59, DEFAULT_SETTINGS)).toBe('not-ready');
+  });
+});
+
+describe('bug pack: repro-steps (upgrade pack, rubric v3)', () => {
+  const REPRO_SECTION = [
+    '',
+    'Steps to reproduce:',
+    '1. Send 200 requests per second with a single API key.',
+    '2. Observe the gateway latency for other tenants.',
+    'Expected: other tenants stay fast. Actual: latency degrades for everyone.',
+  ].join('\n');
+
+  it('stories are never scored on repro steps: the check is absent, score stays 100', () => {
+    const result = scoreIssue(makeIssue());
+    expect(result.checks.find((check) => check.id === 'repro-steps')).toBeUndefined();
+    expect(result.score).toBe(100);
+  });
+
+  it('a bug without reproduction steps fails the check and renormalizes to 91', () => {
+    const result = scoreIssue(makeIssue({ issueType: 'Bug' }));
+    const repro = result.checks.find((check) => check.id === 'repro-steps');
+    expect(repro?.passed).toBe(false);
+    // 100 of 110 possible points: the bug pack adds its weight only for bugs.
+    expect(result.score).toBe(91);
+  });
+
+  it('a bug with a steps-to-reproduce section passes and scores 100', () => {
+    const result = scoreIssue(
+      makeIssue({ issueType: 'Bug', descriptionText: LONG_DESCRIPTION + REPRO_SECTION }),
+    );
+    expect(result.checks.find((check) => check.id === 'repro-steps')?.passed).toBe(true);
+    expect(result.score).toBe(100);
+  });
+
+  it('a bug with an expected/actual pairing (no heading) also passes', () => {
+    const result = scoreIssue(
+      makeIssue({
+        issueType: 'bug',
+        descriptionText:
+          LONG_DESCRIPTION + '\n\nExpected: quota errors are per key. Actual: one key throttles all tenants.',
+      }),
+    );
+    expect(result.checks.find((check) => check.id === 'repro-steps')?.passed).toBe(true);
+  });
+
+  it('defects and incidents are bug-pack types; tasks are not', () => {
+    for (const issueType of ['Defect', 'Incident']) {
+      const result = scoreIssue(makeIssue({ issueType }));
+      expect(result.checks.some((check) => check.id === 'repro-steps')).toBe(true);
+    }
+    const task = scoreIssue(makeIssue({ issueType: 'Task' }));
+    expect(task.checks.some((check) => check.id === 'repro-steps')).toBe(false);
+  });
+
+  it('the project toggle removes the check for bugs too', () => {
+    const result = scoreIssue(
+      makeIssue({ issueType: 'Bug' }),
+      settings({ checksEnabled: { estimate: true, 'due-date': true, 'repro-steps': false } }),
+    );
+    expect(result.checks.some((check) => check.id === 'repro-steps')).toBe(false);
+    expect(result.score).toBe(100);
+  });
+
+  it('an empty steps heading does not pass: the section needs a real body', () => {
+    const result = scoreIssue(
+      makeIssue({ issueType: 'Bug', descriptionText: LONG_DESCRIPTION + '\n\nSteps to reproduce:\n' }),
+    );
+    expect(result.checks.find((check) => check.id === 'repro-steps')?.passed).toBe(false);
+  });
+});
+
+describe('nextFixFor (upgrade pack, review #6)', () => {
+  it('returns the highest-weight failing check; ties break by rubric order', () => {
+    const messy = scoreIssue(makeEmptyIssue());
+    const fix = nextFixFor(messy.checks);
+    // Description (20) and acceptance criteria (20) both fail; description is first.
+    expect(fix?.id).toBe('description');
+    expect(fix?.weight).toBe(20);
+  });
+
+  it('returns the only failing check when there is exactly one', () => {
+    const result = scoreIssue(makeIssue({ storyPoints: null, originalEstimateSeconds: null }));
+    expect(nextFixFor(result.checks)?.id).toBe('estimate');
+  });
+
+  it('returns null when nothing is failing', () => {
+    expect(nextFixFor(scoreIssue(makeIssue()).checks)).toBeNull();
   });
 });

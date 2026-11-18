@@ -169,4 +169,22 @@ export class ForgeJiraAdapter implements JiraAdapter {
     );
     await assertOk(response, `addComment(${issueKey})`);
   }
+
+  async setScoreProperty(
+    issueKey: string,
+    value: { score: number; grade: string; updatedAt: string },
+  ): Promise<void> {
+    // PUT /rest/api/3/issue/{key}/properties/readyset; 204 on success.
+    // The manifest's jira:entityProperty extractions index `score` and
+    // `grade` from this object for JQL (upgrade pack, review #2).
+    const response = await this.requester().requestJira(
+      route`/rest/api/3/issue/${issueKey}/properties/readyset`,
+      {
+        method: 'PUT',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify(value),
+      },
+    );
+    await assertOk(response, `setScoreProperty(${issueKey})`);
+  }
 }

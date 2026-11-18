@@ -12,6 +12,7 @@
  * check off in project settings keeps the scale at 0–100.
  */
 import {
+  BUG_ISSUE_TYPES,
   CHECK_LABELS,
   CHECK_WEIGHTS,
   DEFAULT_SETTINGS,
@@ -334,7 +335,61 @@ function checkDueDate(issue: NormalizedIssue): CheckResult {
   );
 }
 
-const ALL_CHECKS: ReadonlyArray<(issue: NormalizedIssue) => CheckResult> = [
+/** A line that opens a steps-to-reproduce section (bug pack, v3). */
+const REPRO_HEADING_RE =
+  /^\s{0,3}(?:#{1,6}\s*)?(steps to reproduce|reproduction steps|how to reproduce|repro steps)\b[:\s]*(.*)$/i;
+
+/** Body of a steps-to-reproduce section, mirroring the AC extractor. */
+function reproSectionBody(descriptionText: string): string | null {
+  const lines = descriptionText.split('\n');
+  for (let i = 0; i < lines.length; i += 1) {
+    const heading = (lines[i] ?? '').match(REPRO_HEADING_RE);
+    if (!heading) continue;
+    const bodyLines: string[] = [];
+    const inline = (heading[2] ?? '').trim();
+    if (inline) bodyLines.push(inline);
+    for (let j = i + 1; j < lines.length; j += 1) {
+      const next = lines[j] ?? '';
+      if (HEADING_LINE_RE.test(next) || REPRO_HEADING_RE.test(next)) break;
+      bodyLines.push(next);
+    }
+    return bodyLines.join('\n').trim();
+  }
+  return null;
+}
+
+/**
+ * Bug pack (upgrade pack, review #1): bug-type issues must document how
+ * to reproduce the defect. Returns null for every other issue type —
+ * the check is then excluded from scoring entirely rather than passed
+ * by default, so a story's denominator never includes bug criteria.
+ * Passes on a steps-to-reproduce section with a real body, or on an
+ * expected/actual pairing in a substantive description.
+ */
+function checkReproSteps(issue: NormalizedIssue): CheckResult | null {
+  if (!BUG_ISSUE_TYPES.has(issue.issueType.trim().toLowerCase())) return null;
+  const body = reproSectionBody(issue.descriptionText);
+  if (body !== null && hasMeaningfulContent(body)) {
+    return result('repro-steps', true, 'Reproduction steps are documented.', '');
+  }
+  const text = issue.descriptionText;
+  if (/\bexpected\b/i.test(text) && /\bactual\b/i.test(text) && hasMeaningfulContent(text)) {
+    return result(
+      'repro-steps',
+      true,
+      'Expected and actual behaviour are both described.',
+      '',
+    );
+  }
+  return result(
+    'repro-steps',
+    false,
+    'Bug has no documented reproduction steps.',
+    'Add a "Steps to reproduce" section: the exact steps, the expected result, and what actually happens.',
+  );
+}
+
+const ALL_CHECKS: ReadonlyArray<(issue: NormalizedIssue) => CheckResult | null> = [
   checkDescription,
   checkAcceptanceCriteria,
   checkEstimate,
@@ -345,6 +400,7 @@ const ALL_CHECKS: ReadonlyArray<(issue: NormalizedIssue) => CheckResult> = [
   checkNoPlaceholders,
   checkSummaryQuality,
   checkDueDate,
+  checkReproSteps,
 ];
 
 export function isCheckEnabled(id: CheckId, settings: ProjectSettings): boolean {
@@ -367,8 +423,8 @@ export function scoreIssue(
   issue: NormalizedIssue,
   settings: ProjectSettings = DEFAULT_SETTINGS,
 ): ReadinessScore {
-  const checks = ALL_CHECKS.map((check) => check(issue)).filter((check) =>
-    isCheckEnabled(check.id, settings),
+  const checks = ALL_CHECKS.map((check) => check(issue)).filter(
+    (check): check is CheckResult => check !== null && isCheckEnabled(check.id, settings),
   );
   const totalWeight = checks.reduce((sum, check) => sum + check.weight, 0);
   const earnedWeight = checks.reduce(
@@ -382,4 +438,19 @@ export function scoreIssue(
     grade: gradeForScore(score, settings),
     checks,
   };
+}
+
+/**
+ * The single highest-value fix for an issue (upgrade pack, review #6):
+ * the failing check worth the most points. Ties break by rubric order
+ * (the checks array order), so the answer is deterministic. Null when
+ * nothing is failing.
+ */
+export function nextFixFor(checks: CheckResult[]): CheckResult | null {
+  let best: CheckResult | null = null;
+  for (const check of checks) {
+    if (check.passed) continue;
+    if (best === null || check.weight > best.weight) best = check;
+  }
+  return best;
 }

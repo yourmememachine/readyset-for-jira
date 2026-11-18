@@ -30,6 +30,7 @@ export interface RawJiraIssue {
     /** Original estimate (seconds). */
     timeoriginalestimate?: number | null;
     status?: { name?: string; statusCategory?: { key?: string } };
+    issuetype?: { name?: string } | null;
     project?: { key?: string };
     updated?: string;
     [customField: string]: unknown;
@@ -95,6 +96,14 @@ export interface JiraAdapter {
    * "improved with ReadySet — readiness X → Y" audit trail.
    */
   addComment(issueKey: string, body: AdfDoc): Promise<void>;
+  /**
+   * Write the issue's `readyset` entity property ({ score, grade,
+   * updatedAt }) so the score is searchable from JQL, boards and
+   * filters via the manifest's entity-property extractions
+   * (upgrade pack, review #2). Best-effort by contract: callers log
+   * and swallow failures — a property write must never fail scoring.
+   */
+  setScoreProperty(issueKey: string, value: { score: number; grade: string; updatedAt: string }): Promise<void>;
 }
 
 /**
@@ -163,6 +172,11 @@ export const SCORING_FIELD_KEYS = [
   'status',
   'project',
   'updated',
+  // Upgrade pack: scoring reads the issue type for the bug pack. It
+  // is requested on every REST/search fetch (fieldsFor) but is ALSO
+  // gate-exempt below — absence degrades to "not a bug", never to a
+  // refused payload.
+  'issuetype',
 ] as const;
 
 /**
@@ -181,8 +195,13 @@ export const SCORING_FIELD_KEYS = [
  * refetch kept it. A gate must never require a key Jira does not
  * return. (The legacy epic-link field is likewise omitted when
  * unset, but custom fields never gate — see below.)
+ *
+ * `issuetype` is exempt for a different reason (upgrade pack): it is
+ * requested on every fetch ReadySet makes, but if some payload shape
+ * ever omits it, the safe degradation is `normalizeIssue`'s "" — the
+ * issue is scored without the bug pack — never a refused payload.
  */
-export const GATE_EXEMPT_FIELD_KEYS: ReadonlySet<string> = new Set(['parent']);
+export const GATE_EXEMPT_FIELD_KEYS: ReadonlySet<string> = new Set(['parent', 'issuetype']);
 
 /**
  * The scoring fields ABSENT from a raw payload, under the site's
@@ -300,6 +319,7 @@ export function normalizeIssue(
     dueDate: fields.duedate ?? null,
     statusName: fields.status?.name ?? '',
     statusCategory: fields.status?.statusCategory?.key ?? '',
+    issueType: fields.issuetype?.name ?? '',
     updated: fields.updated ?? '',
   };
 }
@@ -351,6 +371,9 @@ export class FakeJiraAdapter implements JiraAdapter {
   readonly listFieldsCalls: number[] = [];
   readonly updateDescriptionCalls: Array<{ issueKey: string; description: AdfDoc }> = [];
   readonly addCommentCalls: Array<{ issueKey: string; body: AdfDoc }> = [];
+  readonly setScorePropertyCalls: Array<{ issueKey: string; value: { score: number; grade: string; updatedAt: string } }> = [];
+  /** When set, setScoreProperty throws it (best-effort contract tests). */
+  setScorePropertyError: Error | null = null;
   /** Projects the "current user" administers; empty = all projects. */
   adminProjects: ReadonlySet<string> | null = null;
 
@@ -412,6 +435,17 @@ export class FakeJiraAdapter implements JiraAdapter {
 
   async addComment(issueKey: string, body: AdfDoc): Promise<void> {
     this.addCommentCalls.push({ issueKey, body: structuredClone(body) });
+    if (!this.issues.some((candidate) => candidate.key === issueKey)) {
+      throw new Error(`FakeJiraAdapter: unknown issue ${issueKey}`);
+    }
+  }
+
+  async setScoreProperty(
+    issueKey: string,
+    value: { score: number; grade: string; updatedAt: string },
+  ): Promise<void> {
+    this.setScorePropertyCalls.push({ issueKey, value: { ...value } });
+    if (this.setScorePropertyError) throw this.setScorePropertyError;
     if (!this.issues.some((candidate) => candidate.key === issueKey)) {
       throw new Error(`FakeJiraAdapter: unknown issue ${issueKey}`);
     }

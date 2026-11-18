@@ -32,6 +32,21 @@ modules:
       resolver:
         function: resolver
       title: ReadySet — Project Readiness
+  # Entity property (upgrade pack, review #2): every rescore writes
+  # { score, grade, updatedAt } to the issue's `readyset` property;
+  # these extractions make it searchable from JQL, boards and filters
+  # as issue.property[readysetScore] / issue.property[readysetGrade].
+  jira:entityProperty:
+    - key: readyset-score-property
+      propertyKey: readyset
+      entityType: issue
+      values:
+        - path: score
+          type: number
+          searchAlias: readysetScore
+        - path: grade
+          type: string
+          searchAlias: readysetGrade
   trigger:
     - key: readyset-issue-events
       function: event-handler

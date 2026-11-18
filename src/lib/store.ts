@@ -153,6 +153,7 @@ export function normalizeSettings(
     checksEnabled: {
       estimate: input?.checksEnabled?.estimate ?? base.checksEnabled.estimate,
       'due-date': input?.checksEnabled?.['due-date'] ?? base.checksEnabled['due-date'],
+      'repro-steps': input?.checksEnabled?.['repro-steps'] ?? base.checksEnabled['repro-steps'],
     },
   };
 }
@@ -180,6 +181,20 @@ export class ScoreStore {
       // The issue moved projects: drop the stale membership so the old
       // project stops counting it immediately (cross-review A2).
       await this.kv.delete(memberKey(previous.projectKey, record.issueKey));
+    }
+    // Score history (upgrade pack, review #3): seeded with the first
+    // computed score, appended only when the score value changes,
+    // capped at the latest 10 points. A pre-upgrade record seeds the
+    // history from its own score/computedAt on its next save.
+    const entry = { score: record.score, grade: record.grade, at: record.computedAt };
+    if (!previous) {
+      record.history = [entry];
+    } else {
+      const history = previous.history ?? [
+        { score: previous.score, grade: previous.grade, at: previous.computedAt },
+      ];
+      record.history =
+        previous.score === record.score ? history : [...history, entry].slice(-10);
     }
     await this.kv.set(scoreKey(record.issueKey), record);
     await this.kv.set(memberKey(record.projectKey, record.issueKey), 1);

@@ -18,7 +18,8 @@ export type CheckId =
   | 'linked-work'
   | 'no-placeholders'
   | 'summary-quality'
-  | 'due-date';
+  | 'due-date'
+  | 'repro-steps';
 
 /** Flat, scoring-ready view of a Jira issue. All fields are plain data. */
 export interface NormalizedIssue {
@@ -50,6 +51,8 @@ export interface NormalizedIssue {
   statusName: string;
   /** Jira status category key: "new" | "indeterminate" | "done" | ... */
   statusCategory: string;
+  /** Issue type name, e.g. "Story" | "Bug" | "Task" ("" when absent). */
+  issueType: string;
   /** Issue `updated` timestamp (ISO) — used as the cache freshness key. */
   updated: string;
 }
@@ -85,6 +88,7 @@ export interface ProjectSettings {
   checksEnabled: {
     estimate: boolean;
     'due-date': boolean;
+    'repro-steps': boolean;
   };
 }
 
@@ -101,6 +105,14 @@ export interface ProjectSettings {
  *   delivered (`customFieldsStatus: INCLUDED`) and merged in.
  */
 export type ScoreSource = 'rest' | 'event';
+
+/** One point in an issue's score history (upgrade pack, review #3). */
+export interface ScoreHistoryEntry {
+  score: number;
+  grade: Grade;
+  /** ISO timestamp of the rescore that produced this value. */
+  at: string;
+}
 
 /** What gets cached in KVS per issue (`score:{issueKey}`). */
 export interface StoredScore extends ReadinessScore {
@@ -121,6 +133,13 @@ export interface StoredScore extends ReadinessScore {
   settingsFingerprint: string;
   /** Which input produced this record; absent on pre-provenance records. */
   source?: ScoreSource;
+  /**
+   * Score history, oldest first, capped at 10 entries (upgrade pack).
+   * Seeded with the first computed score and appended ONLY when the
+   * score value changes, so the panel can show the latest transition
+   * ("20 → 60 · Nov 17"). Absent on records written before the upgrade.
+   */
+  history?: ScoreHistoryEntry[];
 }
 
 export interface ProjectStats {

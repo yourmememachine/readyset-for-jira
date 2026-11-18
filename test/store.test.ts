@@ -95,7 +95,7 @@ describe('ScoreStore', () => {
     const custom = {
       ...DEFAULT_SETTINGS,
       readyThreshold: 70,
-      checksEnabled: { estimate: false, 'due-date': true },
+      checksEnabled: { estimate: false, 'due-date': true, 'repro-steps': true },
     };
     await store.saveSettings('RS', custom);
     expect(await store.getSettings('RS')).toEqual(custom);
@@ -150,5 +150,51 @@ describe('ScoreStore', () => {
     first.nested.n = 999;
     const second = await kv.get<{ nested: { n: number } }>('k');
     expect(second?.nested.n).toBe(1);
+  });
+});
+
+describe('score history (upgrade pack, review #3)', () => {
+  it('seeds history with the first computed score', async () => {
+    const kv = new InMemoryKV();
+    const store = new ScoreStore(kv);
+    await store.saveScore(record('RS-1', 'RS', 40));
+    const saved = await store.getScore('RS-1');
+    expect(saved?.history).toEqual([{ score: 40, grade: 'ready', at: saved?.computedAt }]);
+  });
+
+  it('appends only when the score value changes', async () => {
+    const kv = new InMemoryKV();
+    const store = new ScoreStore(kv);
+    await store.saveScore(record('RS-1', 'RS', 40));
+    await store.saveScore(record('RS-1', 'RS', 40));
+    expect((await store.getScore('RS-1'))?.history).toHaveLength(1);
+    await store.saveScore(record('RS-1', 'RS', 75));
+    const history = (await store.getScore('RS-1'))?.history ?? [];
+    expect(history.map((entry) => entry.score)).toEqual([40, 75]);
+  });
+
+  it('caps history at the latest 10 points', async () => {
+    const kv = new InMemoryKV();
+    const store = new ScoreStore(kv);
+    for (let score = 1; score <= 12; score += 1) {
+      await store.saveScore(record('RS-1', 'RS', score));
+    }
+    const history = (await store.getScore('RS-1'))?.history ?? [];
+    expect(history).toHaveLength(10);
+    expect(history[0]?.score).toBe(3);
+    expect(history[history.length - 1]?.score).toBe(12);
+  });
+
+  it('a pre-upgrade record (no history) seeds from its own last score', async () => {
+    const kv = new InMemoryKV();
+    const store = new ScoreStore(kv);
+    const legacy = record('RS-1', 'RS', 55);
+    delete legacy.history;
+    await kv.set('score:RS-1', legacy);
+    await kv.set('idx:RS:RS-1', 1);
+    await store.saveScore(record('RS-1', 'RS', 55));
+    expect((await store.getScore('RS-1'))?.history?.map((entry) => entry.score)).toEqual([55]);
+    await store.saveScore(record('RS-1', 'RS', 80));
+    expect((await store.getScore('RS-1'))?.history?.map((entry) => entry.score)).toEqual([55, 80]);
   });
 });

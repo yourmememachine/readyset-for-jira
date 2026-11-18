@@ -77,6 +77,7 @@ function SettingsForm({
   const [almost, setAlmost] = useState(String(settings.almostThreshold));
   const [estimateOn, setEstimateOn] = useState(settings.checksEnabled.estimate);
   const [dueDateOn, setDueDateOn] = useState(settings.checksEnabled['due-date']);
+  const [reproStepsOn, setReproStepsOn] = useState(settings.checksEnabled['repro-steps']);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -96,7 +97,7 @@ function SettingsForm({
         settings: {
           readyThreshold: readyValue,
           almostThreshold: almostValue,
-          checksEnabled: { estimate: estimateOn, 'due-date': dueDateOn },
+          checksEnabled: { estimate: estimateOn, 'due-date': dueDateOn, 'repro-steps': reproStepsOn },
         },
       });
       // Adopt the resolver's normalized values so the form shows what
@@ -105,6 +106,7 @@ function SettingsForm({
       setAlmost(String(saved.almostThreshold));
       setEstimateOn(saved.checksEnabled.estimate);
       setDueDateOn(saved.checksEnabled['due-date']);
+      setReproStepsOn(saved.checksEnabled['repro-steps']);
       setMessage('Settings saved. Scores re-bucket against the new thresholds.');
       onSaved(saved);
     } catch (err) {
@@ -164,6 +166,16 @@ function SettingsForm({
         />
         <Label labelFor="readyset-toggle-due-date">
           Require a due date on high-priority issues
+        </Label>
+      </Inline>
+      <Inline space="space.100" alignBlock="center">
+        <Toggle
+          id="readyset-toggle-repro-steps"
+          isChecked={reproStepsOn}
+          onChange={(event) => setReproStepsOn(event.target.checked ?? false)}
+        />
+        <Label labelFor="readyset-toggle-repro-steps">
+          Require steps to reproduce on bugs
         </Label>
       </Inline>
       <Inline space="space.100">

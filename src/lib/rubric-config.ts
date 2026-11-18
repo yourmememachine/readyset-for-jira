@@ -10,8 +10,10 @@ import type { CheckId, ProjectSettings } from './types';
  * v2 (cross-review round 3): acceptance-criteria section must have a
  * real body; placeholder scan covers the AC field, "TBC" and "to-do";
  * `todo` needs marker context; summary tokens are deduplicated.
+ * v3 (upgrade pack): bug-type issues gain the `repro-steps` check
+ * (excluded from scoring for every other issue type).
  */
-export const RUBRIC_VERSION = '2';
+export const RUBRIC_VERSION = '3';
 
 /**
  * Rubric weights (DESIGN.md §5.3). Sum of all weights = 100. When a check
@@ -29,6 +31,7 @@ export const CHECK_WEIGHTS: Record<CheckId, number> = {
   'no-placeholders': 10,
   'summary-quality': 5,
   'due-date': 5,
+  'repro-steps': 10,
 };
 
 export const CHECK_LABELS: Record<CheckId, string> = {
@@ -42,7 +45,15 @@ export const CHECK_LABELS: Record<CheckId, string> = {
   'no-placeholders': 'No TBD / placeholder markers',
   'summary-quality': 'Summary is specific',
   'due-date': 'Due date set (high priority)',
+  'repro-steps': 'Steps to reproduce documented',
 };
+
+/**
+ * Issue type names (lowercased) the bug pack applies to: only these
+ * types are scored on `repro-steps`; for every other type the check
+ * is excluded from the denominator entirely (upgrade pack, review #1).
+ */
+export const BUG_ISSUE_TYPES: ReadonlySet<string> = new Set(['bug', 'defect', 'incident']);
 
 /** Minimum extracted-text length for the description check. */
 export const DESCRIPTION_MIN_CHARS = 280;
@@ -160,8 +171,9 @@ export const DEFAULT_SETTINGS: ProjectSettings = {
   checksEnabled: {
     estimate: true,
     'due-date': true,
+    'repro-steps': true,
   },
 };
 
 /** Checks a project may switch off in settings (DESIGN.md §5.3 item 6). */
-export const TOGGLEABLE_CHECKS: readonly CheckId[] = ['estimate', 'due-date'];
+export const TOGGLEABLE_CHECKS: readonly CheckId[] = ['estimate', 'due-date', 'repro-steps'];

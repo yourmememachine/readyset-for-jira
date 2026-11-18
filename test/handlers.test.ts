@@ -141,7 +141,7 @@ describe('getIssuePanel', () => {
       projectKey: 'RS',
       settings: {
         ...DEFAULT_SETTINGS,
-        checksEnabled: { estimate: false, 'due-date': true },
+        checksEnabled: { estimate: false, 'due-date': true, 'repro-steps': true },
       },
     });
     const after = await getIssuePanel(deps, { issueKey: 'RS-2' });
@@ -689,7 +689,7 @@ describe('settings handlers', () => {
     } as unknown as ProjectSettings;
     const saved = await saveSettings(deps, { projectKey: 'RS', settings: partial });
     expect(saved.readyThreshold).toBe(85);
-    expect(saved.checksEnabled).toEqual({ estimate: false, 'due-date': true });
+    expect(saved.checksEnabled).toEqual({ estimate: false, 'due-date': true, 'repro-steps': true });
   });
 
   it('B13: saveSettings rejects users without project-admin permission', async () => {
@@ -701,5 +701,40 @@ describe('settings handlers', () => {
     ).rejects.toThrow(/Only project administrators/);
     const dashboard = await getProjectDashboard(deps, { projectKey: 'RS' });
     expect(dashboard.canEditSettings).toBe(false);
+  });
+});
+
+describe('entity property + panel history (upgrade pack)', () => {
+  it('scoring writes the readyset entity property with score and grade', async () => {
+    const { deps, jira } = makeDeps([makeRawIssue()]);
+    const panel = await getIssuePanel(deps, { issueKey: 'RS-1' });
+    expect(panel.score).toBe(100);
+    expect(jira.setScorePropertyCalls).toEqual([
+      { issueKey: 'RS-1', value: { score: 100, grade: 'ready', updatedAt: FIXED_NOW.toISOString() } },
+    ]);
+  });
+
+  it('a failing property write never fails scoring (best-effort contract)', async () => {
+    const jira = new FakeJiraAdapter([makeRawIssue()]);
+    jira.setScorePropertyError = new Error('property store unavailable');
+    const { deps } = makeDepsWithJira(jira);
+    const panel = await getIssuePanel(deps, { issueKey: 'RS-1' });
+    expect(panel.score).toBe(100);
+    expect(jira.setScorePropertyCalls).toHaveLength(1);
+  });
+
+  it('panel payload carries the history transition after a score change', async () => {
+    const raw = makeRawMessyIssue('RS-3');
+    const { deps, jira } = makeDeps([raw]);
+    const before = await getIssuePanel(deps, { issueKey: 'RS-3' });
+    expect(before.score).toBe(20);
+    expect(before.history.map((entry) => entry.score)).toEqual([20]);
+    // Fix the issue in place (full description + estimate + assignee +
+    // label + link, mirroring an Improve apply), then rescore.
+    Object.assign(raw.fields, makeRawIssue({}, 'RS-3').fields);
+    raw.fields.updated = '2026-11-17T12:30:00.000Z';
+    const after = await getIssuePanel(deps, { issueKey: 'RS-3' });
+    expect(after.score).toBe(100);
+    expect(after.history.map((entry) => entry.score)).toEqual([20, 100]);
   });
 });

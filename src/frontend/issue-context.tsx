@@ -34,6 +34,8 @@ import ForgeReconciler, {
 } from '@forge/react';
 import type { ApplyPayload, ImprovePayload } from '../functions/improver';
 import type { IssuePanelPayload } from '../functions/resolver';
+import { nextFixFor } from '../lib/rubric';
+import type { ScoreHistoryEntry } from '../lib/types';
 import {
   applyFailed,
   applyLoaded,
@@ -212,6 +214,23 @@ function ImproveSection({
   }
 }
 
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/**
+ * Latest score transition as a one-line history note (upgrade pack):
+ * "Score history: 20 → 60 · Nov 17". Renders nothing until the score
+ * has actually changed at least once.
+ */
+function historyLine(history: ScoreHistoryEntry[]) {
+  if (history.length < 2) return null;
+  const previous = history[history.length - 2];
+  const latest = history[history.length - 1];
+  if (!previous || !latest) return null;
+  const at = new Date(latest.at);
+  const when = Number.isNaN(at.getTime()) ? '' : ` · ${MONTHS[at.getMonth()]} ${at.getDate()}`;
+  return <Text>{`Score history: ${previous.score} → ${latest.score}${when}`}</Text>;
+}
+
 function IssueContextApp() {
   const context = useProductContext();
   const issueKey = extractIssueKey(context);
@@ -288,6 +307,8 @@ function IssueContextApp() {
     );
   }
 
+  const nextFix = nextFixFor(data.checks);
+
   return (
     <Box padding="space.200">
       <Stack space="space.200">
@@ -298,6 +319,12 @@ function IssueContextApp() {
           </Lozenge>
         </Inline>
         <ProgressBar value={data.score / 100} />
+        {historyLine(data.history)}
+        {nextFix ? (
+          <SectionMessage title={`Fix this next: ${nextFix.label} (+${nextFix.weight} pts)`} appearance="information">
+            <Text>{nextFix.fixHint}</Text>
+          </SectionMessage>
+        ) : null}
         <Stack space="space.100">
           {data.checks.map((check) => (
             <Box key={check.id}>
