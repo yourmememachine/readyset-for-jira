@@ -315,3 +315,51 @@ describe('applyImprovement', () => {
     expect(jira.updateDescriptionCalls).toHaveLength(0);
   });
 });
+
+describe('payload completeness (live RS-2 incident)', () => {
+  // Improve drafts against the issue's failed checks and Apply
+  // rescores from a re-read: a partial adapter payload would invent
+  // phantom failures (and, on Apply, store a skeleton score), so
+  // both entry points refuse incomplete payloads outright.
+  class SparseGetIssue extends FakeJiraAdapter {
+    override async getIssue(issueKey: string): Promise<RawJiraIssue> {
+      return {
+        key: issueKey,
+        fields: {
+          summary: 'Add rate limiting to the public API gateway endpoints',
+          priority: { name: 'Medium' },
+          status: { name: 'To Do', statusCategory: { key: 'new' } },
+          project: { key: 'RS' },
+          updated: '2026-11-17T20:21:00.000Z',
+        },
+      };
+    }
+  }
+
+  function sparseDeps(llm: LlmClient) {
+    const deps: ImproverDeps = {
+      jira: new SparseGetIssue([]),
+      store: new ScoreStore(new InMemoryKV()),
+      llm,
+      now: () => FIXED_NOW,
+    };
+    return deps;
+  }
+
+  it('improveIssue rejects a partial payload instead of drafting against phantom failures', async () => {
+    const llm = new FakeLlmClient(() => GOOD_MARKDOWN);
+    await expect(improveIssue(sparseDeps(llm), { issueKey: 'RS-2' })).rejects.toThrow(
+      /incomplete/i,
+    );
+    expect(llm.calls).toEqual([]);
+  });
+
+  it('applyImprovement rejects a partial payload before any write', async () => {
+    const llm = new FakeLlmClient(() => GOOD_MARKDOWN);
+    const deps = sparseDeps(llm);
+    await expect(
+      applyImprovement(deps, { issueKey: 'RS-2', contentHash: 'irrelevant' }),
+    ).rejects.toThrow(/incomplete/i);
+    expect((deps.jira as SparseGetIssue).updateDescriptionCalls).toEqual([]);
+  });
+});

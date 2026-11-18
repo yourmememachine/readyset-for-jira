@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   FakeJiraAdapter,
+  isScoreablePayload,
+  missingScoringFields,
   normalizeIssue,
   resolveFieldMap,
   type JiraFieldInfo,
+  type RawJiraIssue,
 } from '../src/lib/jira';
 import { makeRawIssue } from './fixtures';
 
@@ -83,5 +86,73 @@ describe('FakeJiraAdapter — /search/jql pagination contract (B1)', () => {
     await expect(fake.searchIssues('project = "RS"', 'garbage-token', 10)).rejects.toThrow(
       /Invalid or expired page token/,
     );
+  });
+});
+
+describe('scoring payload completeness (live RS-2 incident)', () => {
+  it('a full REST-shaped payload is complete and scoreable', () => {
+    expect(missingScoringFields(makeRawIssue())).toEqual([]);
+    expect(isScoreablePayload(makeRawIssue())).toBe(true);
+  });
+
+  it('present-but-null counts as present — Jira answers unset fields with null, not omission', () => {
+    const raw = makeRawIssue({ description: null, assignee: null, duedate: null, parent: null });
+    expect(missingScoringFields(raw)).toEqual([]);
+    expect(isScoreablePayload(raw)).toBe(true);
+  });
+
+  it('a sparse field-edit payload reports every absent scoring field and is not scoreable', () => {
+    // The shape delivered live for the RS-2 estimate edit: headline
+    // fields plus the changed story-points value — description,
+    // assignee, labels, links and both estimate fields ABSENT.
+    const sparse: RawJiraIssue = {
+      key: 'RS-2',
+      fields: {
+        summary: 'Add rate limiting to the public API gateway endpoints',
+        priority: { name: 'Medium' },
+        status: { name: 'To Do', statusCategory: { key: 'new' } },
+        project: { key: 'RS' },
+        updated: '2026-11-17T20:21:00.000Z',
+        customfield_10016: 3,
+      },
+    };
+    expect(missingScoringFields(sparse)).toEqual(
+      expect.arrayContaining([
+        'description',
+        'assignee',
+        'labels',
+        'components',
+        'issuelinks',
+        'parent',
+        'duedate',
+        'timeestimate',
+        'timeoriginalestimate',
+        'customfield_10014',
+      ]),
+    );
+    expect(isScoreablePayload(sparse)).toBe(false);
+  });
+
+  it('missingScoringFields reports the mapped custom fields under the site field map, not the defaults', () => {
+    const map = {
+      storyPoints: 'customfield_10042',
+      epicLink: 'customfield_10014',
+      acceptanceCriteria: 'customfield_10077',
+    };
+    // Carries the DEFAULT story-points id but not this site's mapped ids.
+    const raw = makeRawIssue({ customfield_10016: 3 });
+    expect(missingScoringFields(raw, map)).toEqual(
+      expect.arrayContaining(['customfield_10042', 'customfield_10077']),
+    );
+  });
+
+  it('an absent custom field alone does not block scoring — absence reads exactly like null', () => {
+    // The B5/A7 semantics: an INCLUDED customFields map is
+    // authoritative for custom state, and REST omits out-of-context
+    // custom fields; neither absence is evidence of a skeleton.
+    const raw = makeRawIssue({ customfield_10016: null });
+    delete (raw.fields as Record<string, unknown>)['customfield_10014'];
+    expect(missingScoringFields(raw)).toEqual(['customfield_10014']);
+    expect(isScoreablePayload(raw)).toBe(true);
   });
 });

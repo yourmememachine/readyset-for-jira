@@ -90,10 +90,16 @@ export function makeRawIssue(overrides: Partial<RawJiraIssue['fields']> = {}, ke
       parent: null,
       duedate: null,
       timeestimate: null,
+      // Both estimate fields and the epic link are in the adapter's
+      // request list, so real REST/search payloads always carry the
+      // keys (null when unset) — the fixture mirrors that, which the
+      // payload-completeness contract (lib/jira.ts) relies on.
+      timeoriginalestimate: null,
       status: { name: 'To Do', statusCategory: { key: 'new' } },
       project: { key: 'RS' },
       updated: '2026-11-17T10:00:00.000Z',
       customfield_10016: 3,
+      customfield_10014: null,
       ...overrides,
     },
   };

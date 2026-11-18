@@ -17,8 +17,29 @@
  * carry custom fields at all and the issue must be re-fetched over
  * REST — otherwise story points and epic links silently vanish from
  * event-scored records (finding A7/B5).
+ *
+ * The classification below learned a second lesson live (the RS-2
+ * incident, 2026-11-17): 'INCLUDED' speaks only about the custom-
+ * fields channel. For a single-field edit made in the Jira UI, the
+ * event's `issue.fields` itself is SPARSE — headline fields only,
+ * with description, assignee, labels, components, issuelinks,
+ * parent, duedate and both estimate fields ABSENT (not null). The
+ * old classifier merged that skeleton and scored it: RS-2 dropped
+ * from a stored 90 to 35 (only the checks the skeleton could pass:
+ * the edited estimate, priority, no-placeholders, summary, due
+ * date). A merged payload is therefore scored directly ONLY when
+ * it carries every standard scoring field (`isScoreablePayload`);
+ * anything less is re-fetched in full, and a failed or still-
+ * partial refetch keeps the previous stored score rather than
+ * writing a partial one.
  */
-import { normalizeIssue, type RawJiraIssue } from '../lib/jira';
+import {
+  isScoreablePayload,
+  missingScoringFields,
+  normalizeIssue,
+  type RawJiraIssue,
+} from '../lib/jira';
+import type { ScoreSource } from '../lib/types';
 import { getEffectiveFieldMap, scoreAndStore, settingsFingerprint, type ResolverDeps } from './resolver';
 
 export interface JiraIssueEvent {
@@ -46,10 +67,14 @@ export type EventIssueResolution =
 
 /**
  * Classify an event payload:
- * - `merged` — custom fields were INCLUDED; the REST-shaped issue is
- *   the payload with `customFields` merged into `fields`.
- * - `refetch` — the payload is well-formed but omits custom fields;
- *   the issue must be re-fetched over REST.
+ * - `merged` — custom fields were INCLUDED and the merged payload
+ *   carries every standard field scoring reads; it may be scored
+ *   directly. (Custom-field state needs no separate check: the
+ *   INCLUDED map is authoritative for it — see lib/jira.ts.)
+ * - `refetch` — the payload is well-formed but incomplete: custom
+ *   fields omitted, OR the merged payload is missing standard
+ *   scoring fields (the sparse field-edit shape of the RS-2
+ *   incident). The issue must be re-fetched over REST.
  * - `invalid` — the payload is missing the parts normalizeIssue trusts
  *   (`fields`, a string `fields.updated`); a malformed payload must
  *   not mint a corrupt cache record (cross-review A11).
@@ -67,7 +92,8 @@ export function resolveEventIssue(event: JiraIssueEvent): EventIssueResolution {
     event.customFields !== null &&
     typeof event.customFields === 'object';
   if (!hasCustomFields) return { kind: 'refetch' };
-  return { kind: 'merged', raw: { ...raw, fields: { ...fields, ...event.customFields } } };
+  const merged: RawJiraIssue = { ...raw, fields: { ...fields, ...event.customFields } };
+  return isScoreablePayload(merged) ? { kind: 'merged', raw: merged } : { kind: 'refetch' };
 }
 
 export async function handleIssueEvent(
@@ -94,8 +120,38 @@ export async function handleIssueEvent(
     return { handled: false };
   }
   const fieldMap = await getEffectiveFieldMap(deps);
-  const raw = resolution.kind === 'merged' ? resolution.raw : await deps.jira.getIssue(issueKey, fieldMap);
-  const source = resolution.kind === 'merged' ? 'event' : 'rest';
+
+  let raw: RawJiraIssue;
+  let source: ScoreSource;
+  if (resolution.kind === 'merged') {
+    raw = resolution.raw;
+    source = 'event';
+  } else {
+    // Refetch path: the event payload did not carry everything
+    // scoring reads. A failed — or still partial — refetch keeps the
+    // previous stored score untouched; writing a partial score over
+    // a good one is the one outcome this handler must never produce
+    // (live RS-2 incident).
+    let fetched: RawJiraIssue;
+    try {
+      fetched = await deps.jira.getIssue(issueKey, fieldMap);
+    } catch (err) {
+      console.error(
+        `ReadySet: event refetch for ${issueKey} failed; keeping the stored score:`,
+        err,
+      );
+      return { handled: false };
+    }
+    if (!isScoreablePayload(fetched)) {
+      console.error(
+        `ReadySet: event refetch for ${issueKey} returned an incomplete payload ` +
+          `(missing: ${missingScoringFields(fetched, fieldMap).join(', ')}); keeping the stored score`,
+      );
+      return { handled: false };
+    }
+    raw = fetched;
+    source = 'rest';
+  }
   const issue = normalizeIssue(raw, fieldMap);
   const settings = await deps.store.getSettings(issue.projectKey);
 

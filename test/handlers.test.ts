@@ -9,9 +9,11 @@ import {
   rescanProject,
   saveSettings,
   scanProject,
+  scoreAndStore,
   type ResolverDeps,
 } from '../src/functions/resolver';
 import {
+  DEFAULT_FIELD_MAP,
   FakeJiraAdapter,
   normalizeIssue,
   type JiraFieldInfo,
@@ -56,6 +58,35 @@ function v2Event(raw: RawJiraIssue, eventType = 'avi:jira:updated:issue'): JiraI
     eventType,
     issue: { key: raw.key, fields: fields as RawJiraIssue['fields'] },
     customFields,
+    customFieldsStatus: 'INCLUDED',
+  };
+}
+
+/**
+ * The live RS-2 incident payload (2026-11-17, ~20:21 Vancouver):
+ * editing ONE field in the Jira UI ("Story point estimate" = 3)
+ * delivered an updated-issue event whose `issue.fields` carried only
+ * the headline fields — description, assignee, labels, components,
+ * issuelinks, parent, duedate and both estimate fields were ABSENT
+ * (not null) — while `customFields` arrived INCLUDED holding just
+ * the changed field. Scored directly, that skeleton earns exactly 35
+ * (estimate 10 + priority 5 + no-placeholders 10 + summary 5 +
+ * due-date 5) against a real issue worth 100.
+ */
+function sparseFieldEditEvent(issueKey: string, updated: string): JiraIssueEvent {
+  return {
+    eventType: 'avi:jira:updated:issue',
+    issue: {
+      key: issueKey,
+      fields: {
+        summary: 'Add rate limiting to the public API gateway endpoints',
+        priority: { name: 'Medium' },
+        status: { name: 'To Do', statusCategory: { key: 'new' } },
+        project: { key: 'RS' },
+        updated,
+      },
+    },
+    customFields: { customfield_10016: 3 },
     customFieldsStatus: 'INCLUDED',
   };
 }
@@ -161,6 +192,52 @@ describe('getIssuePanel', () => {
     const panel = await getIssuePanel(deps, { issueKey: 'RS-3' });
     expect(panel.score).toBe(20);
     expect(panel.grade).toBe('not-ready');
+  });
+
+  // The panel (and its Refresh button, which simply re-invokes this
+  // resolver) must never score a partial payload either: an adapter
+  // response missing scoring fields serves the stored record instead
+  // of overwriting it with a skeleton score (live RS-2 incident —
+  // the event-written 35 was also un-healable by Refresh because the
+  // poisoned record's `updated` matched the real issue's).
+  class SparseGetIssue extends FakeJiraAdapter {
+    override async getIssue(issueKey: string): Promise<RawJiraIssue> {
+      this.getIssueCalls.push(issueKey);
+      return {
+        key: issueKey,
+        fields: {
+          summary: 'Add rate limiting to the public API gateway endpoints',
+          priority: { name: 'Medium' },
+          status: { name: 'To Do', statusCategory: { key: 'new' } },
+          project: { key: 'RS' },
+          updated: '2026-11-17T20:21:00.000Z',
+        },
+      };
+    }
+  }
+
+  it('live RS-2 incident: a partial adapter payload is never scored — the stored score is served instead', async () => {
+    const { deps, store } = makeDepsWithJira(new SparseGetIssue([]));
+    const settings = await store.getSettings('RS');
+    await scoreAndStore(
+      deps,
+      normalizeIssue(makeRawIssueNoEstimate('RS-2')),
+      settings,
+      DEFAULT_FIELD_MAP,
+      'rest',
+    );
+    expect((await store.getScore('RS-2'))?.score).toBe(90);
+
+    const panel = await getIssuePanel(deps, { issueKey: 'RS-2' });
+    expect(panel.score).toBe(90);
+    expect(panel.fromCache).toBe(true);
+    expect((await store.getScore('RS-2'))?.score).toBe(90);
+  });
+
+  it('live RS-2 incident: a partial adapter payload with no stored score surfaces an error, not a partial score', async () => {
+    const { deps, store } = makeDepsWithJira(new SparseGetIssue([]));
+    await expect(getIssuePanel(deps, { issueKey: 'RS-2' })).rejects.toThrow(/incomplete/i);
+    expect(await store.getScore('RS-2')).toBeUndefined();
   });
 });
 
@@ -363,6 +440,56 @@ describe('rescan and scheduled rescan', () => {
     expect(result.errors).toEqual([{ projectKey: 'BAD', error: 'HTTP 500 from Jira' }]);
     expect(result.projects).toEqual([{ projectKey: 'RS', scanned: 1, complete: true }]);
   });
+
+  it('live RS-2 incident: a sparse search payload is skipped, and reconcile keeps its previous stored score', async () => {
+    class SparseSearch extends FakeJiraAdapter {
+      override async searchIssues(
+        jql: string,
+        pageToken: string | null,
+        maxResults: number,
+      ): Promise<SearchPage> {
+        const page = await super.searchIssues(jql, pageToken, maxResults);
+        return {
+          ...page,
+          issues: page.issues.map((issue) =>
+            issue.key === 'RS-2'
+              ? {
+                  key: issue.key,
+                  fields: {
+                    summary: issue.fields.summary,
+                    priority: issue.fields.priority,
+                    status: issue.fields.status,
+                    project: issue.fields.project,
+                    updated: issue.fields.updated,
+                  },
+                }
+              : issue,
+          ),
+        };
+      }
+    }
+    const { deps, store } = makeDepsWithJira(
+      new SparseSearch([makeRawIssue(), makeRawIssueNoEstimate()]),
+    );
+    const settings = await store.getSettings('RS');
+    await scoreAndStore(
+      deps,
+      normalizeIssue(makeRawIssueNoEstimate('RS-2')),
+      settings,
+      DEFAULT_FIELD_MAP,
+      'rest',
+    );
+    expect((await store.getScore('RS-2'))?.score).toBe(90);
+
+    const result = await scanProject(deps, 'RS', { resume: false });
+    expect(result.complete).toBe(true);
+    // Only the complete payload was scored...
+    expect(result.scanned).toBe(1);
+    expect((await store.getScore('RS-1'))?.score).toBe(100);
+    // ...and RS-2's sparse payload neither overwrote its good record
+    // nor let the reconciling scan delete it (it WAS seen).
+    expect((await store.getScore('RS-2'))?.score).toBe(90);
+  });
 });
 
 describe('handleIssueEvent', () => {
@@ -428,6 +555,56 @@ describe('handleIssueEvent', () => {
       v2Event(makeRawIssue(), 'avi:jira:comment:created'),
     );
     expect(result).toEqual({ handled: false });
+  });
+
+  it('live RS-2 incident: a sparse field-edit event refetches and scores the FULL issue (90 -> 100), never the partial 35', async () => {
+    const rs2 = makeRawIssueNoEstimate('RS-2'); // worth 90: only the estimate is missing
+    const { deps, store, jira } = makeDeps([rs2]);
+    await handleIssueEvent(deps, v2Event(rs2));
+    expect((await store.getScore('RS-2'))?.score).toBe(90);
+
+    // The user sets "Story point estimate" = 3 on RS-2 in the Jira UI;
+    // the full issue is now worth 100.
+    rs2.fields.customfield_10016 = 3;
+    rs2.fields.updated = '2026-11-17T20:21:00.000Z';
+
+    const result = await handleIssueEvent(
+      deps,
+      sparseFieldEditEvent('RS-2', '2026-11-17T20:21:00.000Z'),
+    );
+    expect(result).toEqual({ handled: true, issueKey: 'RS-2' });
+    // The sparse payload must not be scored directly even though its
+    // customFields arrived INCLUDED: the handler refetches over REST.
+    expect(jira.getIssueCalls).toEqual(['RS-2']);
+    const record = await store.getScore('RS-2');
+    expect(record?.score).toBe(100);
+    expect(record?.source).toBe('rest');
+  });
+
+  it('live RS-2 incident: when the refetch after a sparse event fails, the previous stored score is kept', async () => {
+    class FailingGetIssue extends FakeJiraAdapter {
+      override async getIssue(): Promise<RawJiraIssue> {
+        throw new Error('HTTP 500 from Jira');
+      }
+    }
+    const { deps, store } = makeDepsWithJira(new FailingGetIssue([]));
+    const settings = await store.getSettings('RS');
+    await scoreAndStore(
+      deps,
+      normalizeIssue(makeRawIssueNoEstimate('RS-2')),
+      settings,
+      DEFAULT_FIELD_MAP,
+      'rest',
+    );
+    expect((await store.getScore('RS-2'))?.score).toBe(90);
+
+    const result = await handleIssueEvent(
+      deps,
+      sparseFieldEditEvent('RS-2', '2026-11-17T20:21:00.000Z'),
+    );
+    expect(result).toEqual({ handled: false });
+    // No partial record was written over the good one.
+    expect((await store.getScore('RS-2'))?.score).toBe(90);
   });
 });
 

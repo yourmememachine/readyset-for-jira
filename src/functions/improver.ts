@@ -18,7 +18,14 @@
 import { createHash } from 'node:crypto';
 import { buildAdfFromSections, extractTextFromAdf, type DraftSection } from '../lib/adf';
 import { buildTemplateDraft } from '../lib/improve-template';
-import { normalizeIssue } from '../lib/jira';
+import {
+  incompleteScoringPayloadError,
+  isScoreablePayload,
+  missingScoringFields,
+  normalizeIssue,
+  type JiraFieldMap,
+  type RawJiraIssue,
+} from '../lib/jira';
 import { parseDraftMarkdown, type LlmClient } from '../lib/llm';
 import { scoreIssue } from '../lib/rubric';
 import { RUBRIC_VERSION } from '../lib/rubric-config';
@@ -30,6 +37,19 @@ import type {
   ProjectSettings,
 } from '../lib/types';
 import { getEffectiveFieldMap, scoreAndStore, type ResolverDeps } from './resolver';
+
+/**
+ * Read an issue for drafting/applying, refusing partial payloads:
+ * a draft computed against phantom failures — or a stored score
+ * computed from a skeleton — is worse than no draft at all (the
+ * completeness rule of the live RS-2 incident; see lib/jira.ts).
+ */
+function readCompleteIssue(raw: RawJiraIssue, fieldMap: JiraFieldMap): NormalizedIssue {
+  if (!isScoreablePayload(raw)) {
+    throw incompleteScoringPayloadError(raw.key, missingScoringFields(raw, fieldMap));
+  }
+  return normalizeIssue(raw, fieldMap);
+}
 
 export interface ImproverDeps extends ResolverDeps {
   llm: LlmClient;
@@ -135,7 +155,7 @@ export async function improveIssue(
 ): Promise<ImprovePayload> {
   const adapter = deps.jiraUser ?? deps.jira;
   const fieldMap = await getEffectiveFieldMap(deps);
-  const issue = normalizeIssue(await adapter.getIssue(payload.issueKey, fieldMap), fieldMap);
+  const issue = readCompleteIssue(await adapter.getIssue(payload.issueKey, fieldMap), fieldMap);
   const settings = await deps.store.getSettings(issue.projectKey);
   const { draft, fromCache } = await draftForIssue(deps, issue, settings);
   return {
@@ -161,7 +181,7 @@ export async function applyImprovement(
 ): Promise<ApplyPayload> {
   const readAdapter = deps.jiraUser ?? deps.jira;
   const fieldMap = await getEffectiveFieldMap(deps);
-  const issue = normalizeIssue(await readAdapter.getIssue(payload.issueKey, fieldMap), fieldMap);
+  const issue = readCompleteIssue(await readAdapter.getIssue(payload.issueKey, fieldMap), fieldMap);
   const settings = await deps.store.getSettings(issue.projectKey);
   const current = scoreIssue(issue, settings);
   const failed = current.checks.filter((check) => !check.passed);
@@ -180,8 +200,11 @@ export async function applyImprovement(
   await deps.jira.updateDescription(payload.issueKey, buildAdfFromSections(draft.sections));
 
   // Rescore from the re-read issue so the reported jump — and the
-  // stored score the dashboard and Coach read — is the real one.
-  const after = normalizeIssue(await deps.jira.getIssue(payload.issueKey, fieldMap), fieldMap);
+  // stored score the dashboard and Coach read — is the real one. A
+  // partial re-read throws here (after the write, before any store):
+  // the previous stored score is kept rather than replaced by a
+  // skeleton score, and the next event or scan heals the record.
+  const after = readCompleteIssue(await deps.jira.getIssue(payload.issueKey, fieldMap), fieldMap);
   const record = await scoreAndStore(deps, after, settings, fieldMap, 'rest');
 
   const comment = buildAdfFromSections([

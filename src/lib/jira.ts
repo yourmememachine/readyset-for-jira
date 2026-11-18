@@ -140,6 +140,88 @@ export const DEFAULT_FIELD_MAP: JiraFieldMap = {
   acceptanceCriteria: null,
 };
 
+/**
+ * The standard fields scoring reads — exactly the list the production
+ * adapter requests from Jira (`forge-jira.ts` builds its request from
+ * this constant, so the request and the completeness contract below
+ * cannot drift apart).
+ */
+export const SCORING_FIELD_KEYS = [
+  'summary',
+  'description',
+  'priority',
+  'assignee',
+  'labels',
+  'components',
+  'issuelinks',
+  'parent',
+  'duedate',
+  // Both estimate fields: `timeoriginalestimate` is the original
+  // estimate, `timeestimate` the remaining one (cross-review A6).
+  'timeoriginalestimate',
+  'timeestimate',
+  'status',
+  'project',
+  'updated',
+] as const;
+
+/**
+ * The scoring fields ABSENT from a raw payload, under the site's
+ * field map (the mapped story-points / epic-link / acceptance-
+ * criteria ids are reported too). Diagnostic: this is the full list
+ * of what scoring reads but the payload does not carry, and it is
+ * what refusal log lines print.
+ *
+ * Presence — not non-nullness — is the test. When Jira is asked for
+ * a field it answers with the key present and the value null/empty
+ * for an unset field; a payload that OMITS the key is not carrying
+ * the field at all.
+ */
+export function missingScoringFields(
+  raw: RawJiraIssue,
+  fieldMap: JiraFieldMap = DEFAULT_FIELD_MAP,
+): string[] {
+  const fields = (raw?.fields ?? {}) as Record<string, unknown>;
+  const required: string[] = [...SCORING_FIELD_KEYS, fieldMap.storyPoints, fieldMap.epicLink];
+  if (fieldMap.acceptanceCriteria) required.push(fieldMap.acceptanceCriteria);
+  return required.filter((key) => fields[key] === undefined);
+}
+
+/**
+ * The scoring gate every entry point applies before scoring a raw
+ * payload: all STANDARD scoring fields present.
+ *
+ * Why custom fields do not gate: their absence is not evidence of a
+ * partial payload. In an event, an INCLUDED `customFields` map is
+ * authoritative for custom-field state (cross-review B5) — a mapped
+ * field absent from it is unset, not unknown. In a REST/search
+ * payload, Jira omits a custom field that is outside the issue's
+ * field context. Either way `normalizeIssue` reads an absent custom
+ * key exactly like null, and no refetch could return a different
+ * value. Standard fields are the opposite: Jira returns every one
+ * of them when asked, so an absent standard field proves the
+ * payload is a skeleton — and a refetch provably returns more.
+ *
+ * The distinction is load-bearing: Forge issue events for a
+ * single-field edit deliver a sparse `issue.fields` (headline
+ * fields only) with `customFieldsStatus: 'INCLUDED'`, and scoring
+ * that skeleton minted a corrupt 35 for a 100-point issue live on
+ * 2026-11-17 (the RS-2 incident — see events.ts). A payload that
+ * fails this gate must be re-fetched in full before scoring, never
+ * scored as-is.
+ */
+export function isScoreablePayload(raw: RawJiraIssue): boolean {
+  const fields = (raw?.fields ?? {}) as Record<string, unknown>;
+  return SCORING_FIELD_KEYS.every((key) => fields[key] !== undefined);
+}
+
+/** The refusal every scoring entry point throws on partial data. */
+export function incompleteScoringPayloadError(issueKey: string, missing: string[]): Error {
+  return new Error(
+    `ReadySet: incomplete issue payload for ${issueKey} — missing scoring fields: ${missing.join(', ')}. Refusing to score partial data.`,
+  );
+}
+
 function asNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }

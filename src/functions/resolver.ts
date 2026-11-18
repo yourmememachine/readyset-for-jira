@@ -24,6 +24,9 @@ import { computeProjectStats } from '../lib/aggregate';
 import {
   DEFAULT_FIELD_MAP,
   InvalidPageTokenError,
+  incompleteScoringPayloadError,
+  isScoreablePayload,
+  missingScoringFields,
   normalizeIssue,
   projectScanJql,
   resolveFieldMap,
@@ -204,6 +207,25 @@ export async function getIssuePanel(
   const adapter = deps.jiraUser ?? deps.jira;
   const fieldMap = await getEffectiveFieldMap(deps);
   const raw = await adapter.getIssue(payload.issueKey, fieldMap);
+  if (!isScoreablePayload(raw)) {
+    // A partial payload must never be scored: on the live RS-2
+    // incident a skeleton payload minted a 35 over a stored 90, and
+    // this resolver then served the poisoned record on Refresh
+    // because its `updated` matched. Serve the previous stored
+    // record when there is one; otherwise fail loudly rather than
+    // mint a partial score.
+    const missing = missingScoringFields(raw, fieldMap);
+    console.error(
+      `ReadySet: incomplete payload for ${payload.issueKey} (missing: ${missing.join(', ')}); ` +
+        'serving the stored score if one exists',
+    );
+    const stored = await deps.store.getScore(payload.issueKey);
+    if (stored) {
+      const storedSettings = await deps.store.getSettings(stored.projectKey);
+      return panelPayload(stored, storedSettings, true);
+    }
+    throw incompleteScoringPayloadError(payload.issueKey, missing);
+  }
   const issue = normalizeIssue(raw, fieldMap);
   const settings = await deps.store.getSettings(issue.projectKey);
   const cached = await deps.store.getScore(issue.key);
@@ -274,6 +296,19 @@ async function runScanChunk(
       throw err;
     }
     for (const raw of page.issues) {
+      if (!isScoreablePayload(raw)) {
+        // Never score a partial search payload over a good record
+        // (live RS-2 incident rule). The issue still counts as SEEN,
+        // so a reconciling scan does not delete its stored score —
+        // the record is stale, not wrong, and the next complete
+        // payload heals it.
+        console.error(
+          `ReadySet: scan of ${projectKey} skipped ${raw.key}: incomplete payload ` +
+            `(missing: ${missingScoringFields(raw, fieldMap).join(', ')})`,
+        );
+        seen.add(raw.key);
+        continue;
+      }
       const issue = normalizeIssue(raw, fieldMap);
       await scoreAndStore(deps, issue, settings, fieldMap, 'rest');
       seen.add(issue.key);

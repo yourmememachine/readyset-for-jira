@@ -18,26 +18,12 @@
 import api, { route } from '@forge/api';
 import type { AdfDoc } from './adf';
 import type { JiraAdapter, JiraFieldInfo, JiraFieldMap, RawJiraIssue, SearchPage } from './jira';
-import { DEFAULT_FIELD_MAP, InvalidPageTokenError } from './jira';
+import { DEFAULT_FIELD_MAP, InvalidPageTokenError, SCORING_FIELD_KEYS } from './jira';
 
-const BASE_FIELDS = [
-  'summary',
-  'description',
-  'priority',
-  'assignee',
-  'labels',
-  'components',
-  'issuelinks',
-  'parent',
-  'duedate',
-  // Both estimate fields: `timeoriginalestimate` is the original
-  // estimate, `timeestimate` the remaining one (cross-review A6).
-  'timeoriginalestimate',
-  'timeestimate',
-  'status',
-  'project',
-  'updated',
-];
+// The fields every read requests: exactly the set scoring consumes,
+// so a payload Jira answers is complete by the contract in jira.ts
+// (a field Jira is asked for comes back present, null when unset).
+const BASE_FIELDS: readonly string[] = SCORING_FIELD_KEYS;
 
 function fieldsFor(fieldMap: JiraFieldMap): string[] {
   const fields = [...BASE_FIELDS, fieldMap.storyPoints, fieldMap.epicLink];
