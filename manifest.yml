@@ -1,0 +1,57 @@
+# ReadySet for Jira — Forge manifest (phase 1)
+#
+# Phase 1 modules: issue readiness panel, project dashboard, issue-event
+# rescoring, nightly scheduled rescan. Phase 2 adds the Forge LLM improver,
+# Rovo agent + actions (see ../DESIGN.md §5.3).
+#
+# NOTE: `app.id` is a placeholder. `forge register` (phase 2) assigns the
+# real app id before the first deploy. The manifest intentionally contains
+# no `license:` key — link sharing is disabled on licensed apps, and the
+# installation link is this entry's distribution path (DESIGN.md §1).
+modules:
+  jira:issueContext:
+    - key: readyset-issue-context
+      resource: issue-context
+      render: native
+      resolver:
+        function: resolver
+      title: ReadySet
+  jira:projectPage:
+    - key: readyset-project-page
+      resource: project-page
+      render: native
+      resolver:
+        function: resolver
+      title: ReadySet Readiness
+  trigger:
+    - key: readyset-issue-events
+      function: events
+      events:
+        - avi:jira:created:issue
+        - avi:jira:updated:issue
+  scheduledTrigger:
+    - key: readyset-nightly-rescan
+      function: rescan
+      interval: day
+  function:
+    - key: resolver
+      handler: index.handler
+    - key: events
+      handler: index.eventHandler
+    - key: rescan
+      handler: index.scheduledHandler
+      timeoutSeconds: 900
+resources:
+  - key: issue-context
+    path: src/frontend/issue-context.tsx
+  - key: project-page
+    path: src/frontend/project-page.tsx
+app:
+  runtime:
+    name: nodejs22.x
+  id: ari:cloud:ecosystem::app/00000000-0000-0000-0000-000000000000
+permissions:
+  scopes:
+    - read:jira-work
+    - write:jira-work
+    - storage:app
