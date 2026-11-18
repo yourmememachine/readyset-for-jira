@@ -11,11 +11,33 @@ export function isOpen(record: StoredScore): boolean {
   return record.statusCategory !== 'done';
 }
 
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Did this record transition into Ready inside the window? */
+function becameReadyInWindow(record: StoredScore, windowStartMs: number): boolean {
+  const history = record.history ?? [];
+  for (let i = 1; i < history.length; i += 1) {
+    const entry = history[i];
+    const previous = history[i - 1];
+    if (
+      entry &&
+      previous &&
+      entry.grade === 'ready' &&
+      previous.grade !== 'ready' &&
+      Date.parse(entry.at) >= windowStartMs
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function computeProjectStats(
   projectKey: string,
   records: StoredScore[],
   settings: ProjectSettings,
   worstLimit = 25,
+  now: Date = new Date(),
 ): ProjectStats {
   const open = records.filter(isOpen);
   const counts: Record<Grade, number> = { ready: 0, almost: 0, 'not-ready': 0 };
@@ -33,6 +55,8 @@ export function computeProjectStats(
     // Re-derive each grade against current thresholds so the table can
     // never disagree with the counts above after a settings change.
     .map((record) => ({ ...record, grade: gradeForScore(record.score, settings) }));
+  const windowStart = now.getTime() - SEVEN_DAYS_MS;
+  const becameCount = open.filter((record) => becameReadyInWindow(record, windowStart)).length;
   return {
     projectKey,
     totalScored: records.length,
@@ -41,5 +65,10 @@ export function computeProjectStats(
     percentReady,
     counts,
     worstOffenders,
+    becameReadyLast7Days: {
+      count: becameCount,
+      total: open.length,
+      percent: open.length === 0 ? 0 : Math.round((becameCount / open.length) * 1000) / 10,
+    },
   };
 }

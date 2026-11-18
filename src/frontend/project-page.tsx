@@ -28,6 +28,7 @@ import ForgeReconciler, {
   Lozenge,
   ProgressBar,
   SectionMessage,
+  Select,
   Spinner,
   Stack,
   Text,
@@ -40,6 +41,11 @@ import { parseThresholdInput } from '../lib/threshold-input';
 import { ALL_CHECK_IDS, CHECK_LABELS, DEFAULT_SETTINGS } from '../lib/rubric-config';
 import type { CheckId, Grade, ProjectSettings } from '../lib/types';
 import { toUserMessage } from '../lib/user-error';
+import {
+  filterOffenders,
+  offenderFilterOptions,
+  type OffenderFilter,
+} from '../lib/dashboard-filters';
 
 const GRADE_LABEL: Record<Grade, string> = {
   ready: 'Ready',
@@ -262,6 +268,7 @@ function ProjectPageApp() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [rescanning, setRescanning] = useState(false);
   const [reloadCount, setReloadCount] = useState(0);
+  const [offenderFilter, setOffenderFilter] = useState<OffenderFilter>({});
 
   const load = useCallback(() => {
     if (!projectKey) return;
@@ -375,6 +382,13 @@ function ProjectPageApp() {
                 <Heading size="medium">{stats.openScored}</Heading>
                 <Text>Open issues scored</Text>
               </Stack>
+              <Stack space="space.050">
+                <Heading size="medium">{stats.becameReadyLast7Days.count}</Heading>
+                <Text>
+                  Became Ready in the last 7 days ({stats.becameReadyLast7Days.percent}% of
+                  open issues)
+                </Text>
+              </Stack>
             </Inline>
             <ProgressBar value={stats.averageScore / 100} />
             <Inline space="space.100">
@@ -385,6 +399,11 @@ function ProjectPageApp() {
               ))}
             </Inline>
             <Heading size="small">Lowest-scoring open issues</Heading>
+            <OffenderFilters
+              records={stats.worstOffenders}
+              filter={offenderFilter}
+              onChange={setOffenderFilter}
+            />
             <DynamicTable
               head={{
                 cells: [
@@ -395,7 +414,7 @@ function ProjectPageApp() {
                   { key: 'grade', content: 'Grade' },
                 ],
               }}
-              rows={stats.worstOffenders.map((record) => ({
+              rows={filterOffenders(stats.worstOffenders, offenderFilter).map((record) => ({
                 key: record.issueKey,
                 cells: [
                   {
@@ -418,6 +437,17 @@ function ProjectPageApp() {
             />
           </>
         ) : null}
+        <SectionMessage title="How ReadySet works" appearance="information">
+          <Text>
+            ReadySet scores every open issue against a transparent rubric (description,
+            acceptance criteria, estimate, links — plus reproduction steps for bugs) and
+            mirrors each score into a Jira issue property, so JQL can find work that is
+            not ready: readysetScore &lt; 60. Improve drafts a better description from the
+            issue's own facts and shows the projected score before applying. Project
+            admins can retune thresholds, weights, and checks in the settings below.
+            Support: tdilip2501@gmail.com (within 2 business days).
+          </Text>
+        </SectionMessage>
         <Text>
           Field map in use — story points: {data.fieldMap.storyPoints}, epic
           link: {data.fieldMap.epicLink}, acceptance criteria:{' '}
@@ -448,3 +478,52 @@ ForgeReconciler.render(
     <ProjectPageApp />
   </React.StrictMode>,
 );
+
+/**
+ * Type / assignee / label filters over the worst-offenders table
+ * (Wave 2). Options come from the loaded records themselves, so a
+ * filter never offers a value nothing can match.
+ */
+function OffenderFilters({
+  records,
+  filter,
+  onChange,
+}: {
+  records: ProjectDashboardPayload['stats']['worstOffenders'];
+  filter: OffenderFilter;
+  onChange: (next: OffenderFilter) => void;
+}) {
+  const options = offenderFilterOptions(records);
+  const picker = (
+    label: string,
+    values: string[],
+    current: string | undefined,
+    apply: (value: string | undefined) => void,
+  ) => (
+    <Box>
+      <Label labelFor={`readyset-filter-${label}`}>{label}</Label>
+      <Select
+        id={`readyset-filter-${label}`}
+        options={[
+          { label: 'All', value: '' },
+          ...values.map((value) => ({ label: value, value })),
+        ]}
+        value={{ label: current ?? 'All', value: current ?? '' }}
+        onChange={(selected) =>
+          apply(selected && selected.value !== '' ? selected.value : undefined)
+        }
+      />
+    </Box>
+  );
+  return (
+    <Inline space="space.200">
+      {picker('Type', options.issueTypes, filter.issueType, (issueType) =>
+        onChange({ ...filter, issueType }),
+      )}
+      {picker('Assignee', options.assignees, filter.assignee, (assignee) =>
+        onChange({ ...filter, assignee }),
+      )}
+      {picker('Label', options.labels, filter.label, (label) => onChange({ ...filter, label }))}
+    </Inline>
+  );
+}

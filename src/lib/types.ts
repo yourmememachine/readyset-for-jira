@@ -156,6 +156,13 @@ export interface StoredScore extends ReadinessScore {
   settingsFingerprint: string;
   /** Which input produced this record; absent on pre-provenance records. */
   source?: ScoreSource;
+  /** Issue type at compute time (Wave 2 dashboard filters). Absent on
+   *  records written before the field existed, until rescored. */
+  issueType?: string;
+  /** Assignee display name at compute time; null when unassigned. */
+  assignee?: string | null;
+  /** Labels at compute time. */
+  labels?: string[];
   /**
    * Score history, oldest first, capped at 10 entries (upgrade pack).
    * Seeded with the first computed score and appended ONLY when the
@@ -175,6 +182,12 @@ export interface ProjectStats {
   counts: Record<Grade, number>;
   /** Lowest-scoring open issues, worst first, capped by the caller. */
   worstOffenders: StoredScore[];
+  /**
+   * Momentum (Wave 2): how many open issues transitioned INTO Ready
+   * during the last 7 days, from their score history (transitions
+   * only — an issue first seen already Ready does not count).
+   */
+  becameReadyLast7Days: { count: number; total: number; percent: number };
 }
 
 /** Where an improvement draft came from (phase 2a). */

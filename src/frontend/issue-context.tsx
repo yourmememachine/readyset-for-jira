@@ -24,6 +24,7 @@ import ForgeReconciler, {
   Button,
   Heading,
   Inline,
+  Link,
   Lozenge,
   ProgressBar,
   SectionMessage,
@@ -50,6 +51,7 @@ import {
   type ImproveFlowState,
 } from '../lib/improve-flow';
 import { toUserMessage } from '../lib/user-error';
+import { scoreFeedbackHref } from '../lib/feedback';
 import type { Grade } from '../lib/types';
 
 const GRADE_LABEL: Record<Grade, string> = {
@@ -356,6 +358,9 @@ function IssueContextApp() {
           <Button onClick={() => setRefreshCount((count) => count + 1)}>
             Refresh score
           </Button>
+          <Link href={scoreFeedbackHref(issueKey, data.score, data.grade)}>
+            Report an incorrect score
+          </Link>
         </Inline>
         <Text>Scores update automatically when the issue changes.</Text>
       </Stack>
