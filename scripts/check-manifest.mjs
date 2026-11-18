@@ -15,9 +15,12 @@
  * - write:jira-work is present (phase 2a: the Improve Apply flow's
  *   writes use it — in phase 1 its ABSENCE was pinned by B17, when
  *   nothing wrote to Jira)
- * - phase 2a modules: the `llm` enablement names the Haiku tier; the
+ * - phase 2a modules: the `llm` enablement names the Claude family
+ *   (phase 2b: `forge lint` proved the manifest takes the family name
+ *   `claude`; the Haiku model ID lives in the code's IMPROVER_MODEL); the
  *   three Coach actions exist and are GET; `rovo:agent` wires exactly
- *   those actions and the agent-prompt resource, which is declared.
+ *   those actions and carries its prompt INLINE (phase 2b: `forge lint`
+ *   proved the schema takes a prompt string, not a resource).
  *
  * This is a text-level check, not a YAML parse — the manifest is small
  * and hand-maintained; `forge lint` (phase 2b) remains the real schema
@@ -84,16 +87,19 @@ for (const key of ACTION_KEYS) {
   check(agentBlock.includes(`- ${key}`), `rovo:agent does not wire action ${key}`);
 }
 check(
-  agentBlock.includes('resource: agent-prompt'),
-  'rovo:agent does not use the agent-prompt resource',
+  agentBlock.includes('prompt:') && agentBlock.includes('You are ReadySet Coach'),
+  'rovo:agent does not carry the inline Coach prompt',
 );
 check(
-  text.includes('key: agent-prompt') && text.includes('path: static/agent/prompt.md'),
-  'agent-prompt resource (static/agent/prompt.md) is not declared',
+  !text.includes('resource: agent-prompt') && !text.includes('key: agent-prompt'),
+  'agent-prompt resource form is invalid in the rovo:agent schema (forge lint, phase 2b) — the prompt must be inline',
 );
 
 const llmBlock = moduleBlock('llm');
-check(/haiku/i.test(llmBlock), 'llm module does not enable the Haiku tier');
+check(
+  llmBlock.includes('key: readyset-llm') && llmBlock.includes('- claude'),
+  'llm module does not enable the Claude family under key readyset-llm',
+);
 
 if (failures.length > 0) {
   console.error('manifest check FAILED:');

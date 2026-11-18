@@ -1,7 +1,9 @@
 # ReadySet Coach — agent prompt
 
-<!-- Wired into the manifest (phase 2a) as the `rovo:agent`
-     readyset-coach prompt resource. The agent answers strictly from
+<!-- The manifest (phase 2b, after forge lint) carries this prompt
+     INLINE as the `rovo:agent` readyset-coach `prompt:` string — the
+     schema takes a string, not a resource. This file is the readable
+     source; keep the two in sync. The agent answers strictly from
      ReadySet's stored scores via its GET actions; it never invents
      a score. -->
 

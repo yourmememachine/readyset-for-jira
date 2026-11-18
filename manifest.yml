@@ -17,6 +17,7 @@ modules:
   jira:issueContext:
     - key: readyset-issue-panel
       resource: issue-panel
+      render: native
       resolver:
         function: resolver
       title: ReadySet
@@ -27,6 +28,7 @@ modules:
   jira:projectPage:
     - key: readyset-project-page
       resource: project-page
+      render: native
       resolver:
         function: resolver
       title: ReadySet — Project Readiness
@@ -51,7 +53,7 @@ modules:
       handler: index.scheduledHandler
     - key: action-issue-readiness
       handler: index.fetchIssueReadinessAction
-    - key: action-project-readiness
+    - key: action-project-ready
       handler: index.fetchProjectReadinessAction
     - key: action-fix-first
       handler: index.fetchFixFirstAction
@@ -62,44 +64,47 @@ modules:
     - key: fetch-issue-readiness
       name: Fetch issue readiness
       description: >-
-        Returns the ReadySet readiness score for one Jira issue, with
-        the per-check explanation of what passed, what failed, and the
-        one-line fix for each failing check. Answers from stored
-        scores only.
+        Returns the ReadySet readiness score for one Jira issue, with the
+        per-check explanation of what passed, what failed, and the one-line fix
+        for each failing check. Answers from stored scores only.
       actionVerb: GET
       function: action-issue-readiness
       inputs:
         issueKey:
+          title: Issue key
           type: string
           required: true
           description: The Jira issue key, for example ABC-123.
     - key: fetch-project-readiness
       name: Fetch project readiness
       description: >-
-        Returns the ReadySet readiness summary for one Jira project:
-        average score, share of Ready issues, grade counts, scan
-        status, and the five lowest-scoring open issues.
+        Returns the ReadySet readiness summary for one Jira project: average
+        score, share of Ready issues, grade counts, scan status, and the five
+        lowest-scoring open issues.
       actionVerb: GET
-      function: action-project-readiness
+      function: action-project-ready
       inputs:
         projectKey:
+          title: Project key
           type: string
           required: true
           description: The Jira project key, for example ABC.
     - key: fetch-fix-first
       name: Fetch fix-first list
       description: >-
-        Returns a project's lowest-scoring open issues, worst first,
-        each with its highest-weight failing readiness checks and
-        their one-line fixes — the order a team should fix them in.
+        Returns a project's lowest-scoring open issues, worst first, each with
+        its highest-weight failing readiness checks and their one-line fixes —
+        the order a team should fix them in.
       actionVerb: GET
       function: action-fix-first
       inputs:
         projectKey:
+          title: Project key
           type: string
           required: true
           description: The Jira project key, for example ABC.
         limit:
+          title: Limit
           type: number
           required: false
           description: How many issues to return (default 5, maximum 25).
@@ -107,11 +112,38 @@ modules:
     - key: readyset-coach
       name: ReadySet Coach
       description: >-
-        Sprint-readiness coach for Jira. Answers how ready an issue or
-        a project is for its sprint and what to fix first, grounded in
-        ReadySet's deterministic readiness scores.
-      prompt:
-        resource: agent-prompt
+        Sprint-readiness coach for Jira. Answers how ready an issue or a project
+        is for its sprint and what to fix first, grounded in ReadySet's
+        deterministic readiness scores.
+      prompt: >-
+        You are ReadySet Coach, a sprint-readiness assistant for software teams
+        working in Jira.
+
+        ReadySet scores every issue's sprint-readiness from 0 to 100 with a
+        transparent rubric: description depth, acceptance criteria, estimate,
+        priority, assignee, labels/components, linked work, unresolved
+        placeholders (TBD/TODO), summary quality, and due dates on high-priority
+        work. Grades: Ready (80+), Almost (60-79), Not ready (below 60).
+
+        Your actions: - fetch-issue-readiness - one issue's score and its
+        per-check explanation. Use it for "How ready is ABC-123?" and "Why isn't
+        ABC-123 ready?" - fetch-project-readiness - a project's average score,
+        share of Ready issues, grade counts, and its lowest-scoring open issues.
+        Use it for "How ready is project ABC?" - fetch-fix-first - a project's
+        lowest-scoring open issues, each with its highest-weight failing checks
+        and their one-line fixes. Use it for "What should I fix first?"
+
+        How you answer: - Always ground answers in these actions. If an action
+        returns no data for an issue or project, say it has not been scored yet
+        - never estimate or invent a score. - When asked what to fix first, rank
+        by impact: lowest scores first, and within an issue, the highest-weight
+        failing checks first (acceptance criteria and description are worth 20
+        points each). - Quote the failing checks and their one-line fixes
+        verbatim from the score data; do not paraphrase a fix into different
+        advice. - Keep answers short and concrete: issue key, score, and the
+        specific missing pieces. - You are read-only. If asked to change an
+        issue, explain that ReadySet Coach only reports readiness, and point to
+        the issue's ReadySet panel for the fix checklist and the Improve flow.
       actions:
         - fetch-issue-readiness
         - fetch-project-readiness
@@ -122,24 +154,20 @@ modules:
         - What should I fix first before sprint planning?
   # Forge LLMs enablement for the Improve drafting (Haiku tier).
   llm:
-    - models:
-        - claude-haiku-4-5
+    - key: readyset-llm
+      model:
+        - claude
 resources:
   - key: issue-panel
     path: src/frontend/issue-context.tsx
   - key: project-page
     path: src/frontend/project-page.tsx
-  - key: agent-prompt
-    path: static/agent/prompt.md
 app:
-  id: ari:cloud:ecosystem::app/00000000-0000-4000-8000-000000000000
+  id: ari:cloud:ecosystem::app/58468b0b-6f97-4b8b-adb7-8934eebea77c
   runtime:
     name: nodejs22.x
-  # storage:app covers Forge KVS; read:jira-work covers the Jira REST
-  # reads; write:jira-work returned in phase 2a with the Improve Apply
-  # flow — the app's only Jira writes (description replace + comment).
-  permissions:
-    scopes:
-      - read:jira-work
-      - write:jira-work
-      - storage:app
+permissions:
+  scopes:
+    - read:jira-work
+    - write:jira-work
+    - storage:app
