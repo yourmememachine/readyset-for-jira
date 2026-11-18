@@ -101,9 +101,13 @@ async function draftForIssue(
     const markdown = await deps.llm.draftDescription({ issue, failedChecks: failed });
     sections = parseDraftMarkdown(markdown);
     source = 'llm';
-  } catch {
+  } catch (err) {
     // LLM unavailable / errored / unusable reply: the deterministic
-    // template keeps Improve useful and the demo reproducible.
+    // template keeps Improve useful and the demo reproducible. The
+    // failure is logged (never swallowed silently) so a live fallback
+    // is diagnosable from `forge logs` — phase 2b's first live Improve
+    // fell back with no trace, which is why this line exists.
+    console.error('ReadySet: LLM draft failed, using template fallback:', err);
     sections = buildTemplateDraft(issue, failed);
     source = 'template';
   }

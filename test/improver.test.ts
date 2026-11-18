@@ -198,10 +198,24 @@ describe('improveIssue', () => {
       throw new Error('LLM unavailable');
     });
     const { deps } = makeImproverDeps([makeRawMessyIssue()], llm);
-    const result = await improveIssue(deps, { issueKey: 'RS-3' });
-    expect(result.source).toBe('template');
-    expect(result.sections.map((section) => section.heading)).toContain('Definition of done');
-    expect(result.projectedScore).toBe(60);
+    const logged: unknown[][] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => {
+      logged.push(args);
+    };
+    try {
+      const result = await improveIssue(deps, { issueKey: 'RS-3' });
+      expect(result.source).toBe('template');
+      expect(result.sections.map((section) => section.heading)).toContain('Definition of done');
+      expect(result.projectedScore).toBe(60);
+    } finally {
+      console.error = originalError;
+    }
+    // The fallback must never be silent: the failure is logged so a
+    // live fallback can be diagnosed from the app logs (phase 2b).
+    expect(logged).toHaveLength(1);
+    expect(String(logged[0]?.[0])).toContain('LLM draft failed');
+    expect(String(logged[0]?.[1])).toContain('LLM unavailable');
   });
 
   it('falls back to the template when the LLM reply is unusable', async () => {
