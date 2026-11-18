@@ -13,7 +13,7 @@ Built on Atlassian Forge. No external backend, no API keys, and all data
 stays in Forge storage on Atlassian.
 
 - **Demo video:** [[DEMO VIDEO URL — paste the public YouTube link here]]
-- **Installation link:** [[INSTALLATION LINK — paste the Forge installation link here]]
+- **Installation link:** https://developer.atlassian.com/console/install/58468b0b-6f97-4b8b-adb7-8934eebea77c?signature=AYABeDOjyX7%2Fnf1iHBPkSJXf2wcAAAADAAdhd3Mta21zAEthcm46YXdzOmttczp1cy13ZXN0LTI6NzA5NTg3ODM1MjQzOmtleS83MDVlZDY3MC1mNTdjLTQxYjUtOWY5Yi1lM2YyZGNjMTQ2ZTcAuAECAQB4CxqLTo9l4lqXuFjNim1xJM%2Bp%2F3TVP9xHS2BrU5DRRucBn%2BeTrsmAXZ3lIcC2c6MfOgAAAH4wfAYJKoZIhvcNAQcGoG8wbQIBADBoBgkqhkiG9w0BBwEwHgYJYIZIAWUDBAEuMBEEDLNAlB9iBxexu3jTuAIBEIA7e152vtDLkHk8BOmEtW%2FatIMqbSYDVFK%2FMH58IrhR2LR%2FDBHnxWbeDfmOSeXew6JZbHI4IEIwvRuD5s8AB2F3cy1rbXMAS2Fybjphd3M6a21zOmV1LXdlc3QtMTo3MDk1ODc4MzUyNDM6a2V5LzQ2MzBjZTZiLTAwYzMtNGRlMi04NzdiLTYyN2UyMDYwZTVjYwC4AQICAHi9bVMAkme4qVQX1fQHo6ePw3H40A7cGfz7yrmSfBWMXgH%2BN4Xd4rjZJjYyvv4y584VAAAAfjB8BgkqhkiG9w0BBwagbzBtAgEAMGgGCSqGSIb3DQEHATAeBglghkgBZQMEAS4wEQQMEWswBzJIxmJQS73kAgEQgDvydEXa5KFPoQrgWRxhai79jEvyYV3uN8LkNzHqZpfk1iKfB6vi1tDSHenRwiquYGLJzXgQ2RmeL5avlQAHYXdzLWttcwBLYXJuOmF3czprbXM6dXMtZWFzdC0xOjcwOTU4NzgzNTI0MzprZXkvNmMxMjBiYTAtNGNkNS00OTg1LWI4MmUtNDBhMDQ5NTJjYzU3ALgBAgIAeDYASx0XCjkny4iLV6vz%2BKtEGSGT6kdt0QRpkn6D%2FlVEARjazB7XDQpK461CR%2BpO4J0AAAB%2BMHwGCSqGSIb3DQEHBqBvMG0CAQAwaAYJKoZIhvcNAQcBMB4GCWCGSAFlAwQBLjARBAw33ekAqL%2BN98NQ6t4CARCAO1RUJ8I1HVIpL14SccFIBWpwZ59R%2F6VmFw5Adgj0OlrzANaHvLfCIZar%2BKPfF%2B59f99pOPNyJLUgfEtxAgAAAAAMAAAQAAAAAAAAAAAAAAAAAK2tL3IzYVlTtBEP%2B2OO0gv%2F%2F%2F%2F%2FAAAAAQAAAAAAAAAAAAAAAQAAADJv%2FhxcROuo7qibEAY6eNWsaD3%2BR8XEAHcoQxtgTCKxGT%2FjGNy1mCLNJXNXmIrDqW4zrdZhg%2FLzuXdMLkd08VvrgEA%3D&product=jira
 
 ## Install
 
@@ -125,7 +125,7 @@ npm run typecheck   # tsc --noEmit
 npm run lint:manifest
 ```
 
-**Tests: 142 passing across 11 files** — the rubric (fixture issues with
+**Tests: 158 passing across 11 files** — the rubric (fixture issues with
 hand-computed scores: fully specified = exactly 100, empty = 15, messy =
 20), handlers (including a 150-issue pagination run and checkpoint resume
 across projects), the Improve flow (LLM draft, template fallback lifting
@@ -140,5 +140,4 @@ test.
 
 ## License
 
-© 2026 Dilip Teneti. A `LICENSE` file will be added to this repository
-before public release; until then, all rights reserved.
+MIT — see the `LICENSE` file in this repository. © 2026 Dilip Teneti.
