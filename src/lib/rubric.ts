@@ -36,9 +36,15 @@ import type {
 
 const PLACEHOLDER_TOKEN_RE = new RegExp(
   `\\b(${PLACEHOLDER_TOKENS.join('|')})s?\\b`,
-  'i',
+  'gi',
 );
+/** Hyphenated marker; `\btodo\b` can never match it (cross-review A14). */
+const TO_DO_RE = /\bto-do\b(?!\s+list\b)/gi;
 const ACCEPTANCE_CRITERIA_RE = /acceptance criteria/i;
+/** A line that opens an acceptance-criteria section. */
+const AC_HEADING_RE = /^\s{0,3}(?:#{1,6}\s*)?acceptance criteria\b[:\s]*(.*)$/i;
+/** A markdown-style heading line (any level) — ends an AC section. */
+const HEADING_LINE_RE = /^\s{0,3}#{1,6}\s+\S/;
 
 function result(
   id: CheckId,
@@ -64,9 +70,50 @@ function checkDescription(issue: NormalizedIssue): CheckResult {
   );
 }
 
+/**
+ * Meaningful-content test shared by the AC check and the placeholder
+ * check: after removing placeholder markers, is there real text left?
+ * A body that is empty or placeholder-only does not count as content
+ * (cross-review A5/A12) — otherwise "Acceptance criteria: TBD" would
+ * outscore honestly omitting the section.
+ */
+function hasMeaningfulContent(text: string): boolean {
+  const withoutMarkers = text
+    .replace(PLACEHOLDER_TOKEN_RE, ' ')
+    .replace(TO_DO_RE, ' ')
+    .replace(/to be (decided|determined|confirmed)/gi, ' ');
+  return withoutMarkers.replace(/[^a-z0-9]+/gi, '').length >= 3;
+}
+
+/**
+ * Find an acceptance-criteria *section* in the description and return
+ * its body, or null when there is no section. The phrase must appear
+ * as a heading (start of a line, optional markdown hashes / trailing
+ * colon) — a bare mention mid-sentence is not a section
+ * (cross-review A5). The body runs until the next heading line.
+ */
+function acceptanceCriteriaSectionBody(descriptionText: string): string | null {
+  const lines = descriptionText.split('\n');
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i] ?? '';
+    const heading = line.match(AC_HEADING_RE);
+    if (!heading) continue;
+    const bodyLines: string[] = [];
+    const inline = (heading[1] ?? '').trim();
+    if (inline) bodyLines.push(inline);
+    for (let j = i + 1; j < lines.length; j += 1) {
+      const next = lines[j] ?? '';
+      if (HEADING_LINE_RE.test(next) || AC_HEADING_RE.test(next)) break;
+      bodyLines.push(next);
+    }
+    return bodyLines.join('\n').trim();
+  }
+  return null;
+}
+
 function checkAcceptanceCriteria(issue: NormalizedIssue): CheckResult {
   const fieldText = issue.acceptanceCriteriaText?.trim() ?? '';
-  if (fieldText.length >= 10) {
+  if (fieldText.length >= 10 && hasMeaningfulContent(fieldText)) {
     return result(
       'acceptance-criteria',
       true,
@@ -74,7 +121,8 @@ function checkAcceptanceCriteria(issue: NormalizedIssue): CheckResult {
       '',
     );
   }
-  if (ACCEPTANCE_CRITERIA_RE.test(issue.descriptionText)) {
+  const sectionBody = acceptanceCriteriaSectionBody(issue.descriptionText);
+  if (sectionBody !== null && hasMeaningfulContent(sectionBody)) {
     return result(
       'acceptance-criteria',
       true,
@@ -82,10 +130,13 @@ function checkAcceptanceCriteria(issue: NormalizedIssue): CheckResult {
       '',
     );
   }
+  const mentioned = ACCEPTANCE_CRITERIA_RE.test(issue.descriptionText) || fieldText.length > 0;
   return result(
     'acceptance-criteria',
     false,
-    'No acceptance criteria section in the description.',
+    mentioned
+      ? 'Acceptance criteria are mentioned but not actually written.'
+      : 'No acceptance criteria section in the description.',
     'Add an "Acceptance criteria" section listing how reviewers will verify this work.',
   );
 }
@@ -165,9 +216,33 @@ function checkLinkedWork(issue: NormalizedIssue): CheckResult {
   );
 }
 
+/**
+ * Does this `todo` occurrence read as an unresolved marker, or as the
+ * ordinary product noun ("todo list")? Markers appear as TODO in caps,
+ * at the start of a line (optionally bulleted), or followed by a colon
+ * (cross-review A13). Mid-sentence lowercase "todo" — "Add todo list
+ * sharing" — is vocabulary, not a marker.
+ */
+function isTodoMarker(text: string, index: number, match: string): boolean {
+  if (match !== match.toLowerCase()) return true; // TODO / Todo-style emphasis
+  const before = text.slice(0, index);
+  const lineStart = before.lastIndexOf('\n') + 1;
+  if (/^\s*(?:[-*•]\s*)?$/.test(before.slice(lineStart))) return true;
+  const after = text.slice(index + match.length).trimStart();
+  return after.startsWith(':');
+}
+
 function findPlaceholder(text: string): string | null {
-  const tokenMatch = text.match(PLACEHOLDER_TOKEN_RE);
-  if (tokenMatch) return tokenMatch[0];
+  PLACEHOLDER_TOKEN_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = PLACEHOLDER_TOKEN_RE.exec(text)) !== null) {
+    const token = (match[1] ?? '').toLowerCase();
+    if (token === 'todo' && !isTodoMarker(text, match.index, match[0])) continue;
+    return match[0];
+  }
+  TO_DO_RE.lastIndex = 0;
+  const toDo = TO_DO_RE.exec(text);
+  if (toDo) return toDo[0];
   const lower = text.toLowerCase();
   for (const phrase of PLACEHOLDER_PHRASES) {
     if (lower.includes(phrase)) return phrase;
@@ -176,32 +251,38 @@ function findPlaceholder(text: string): string | null {
 }
 
 function checkNoPlaceholders(issue: NormalizedIssue): CheckResult {
-  const inSummary = findPlaceholder(issue.summary);
-  if (inSummary) {
-    return result(
-      'no-placeholders',
-      false,
-      `Summary still contains the placeholder "${inSummary}".`,
-      'Replace placeholder text with the real requirement before sprint planning.',
-    );
-  }
-  const inDescription = findPlaceholder(issue.descriptionText);
-  if (inDescription) {
-    return result(
-      'no-placeholders',
-      false,
-      `Description still contains the placeholder "${inDescription}".`,
-      'Replace placeholder text with the real requirement before sprint planning.',
-    );
+  const targets: Array<[string, string]> = [
+    ['Summary', issue.summary],
+    ['Description', issue.descriptionText],
+    // The dedicated AC field is content too: placeholder text there was
+    // previously invisible to this check (cross-review A12).
+    ['Acceptance criteria field', issue.acceptanceCriteriaText ?? ''],
+  ];
+  for (const [label, text] of targets) {
+    const found = findPlaceholder(text);
+    if (found) {
+      return result(
+        'no-placeholders',
+        false,
+        `${label} still contains the placeholder "${found}".`,
+        'Replace placeholder text with the real requirement before sprint planning.',
+      );
+    }
   }
   return result('no-placeholders', true, 'No TBD/TODO-style placeholders found.', '');
 }
 
 function specificTokens(summary: string): string[] {
-  return summary
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter((token) => token.length >= 3 && !VAGUE_WORDS.has(token) && !STOPWORDS.has(token));
+  // Distinct tokens only: repeating one specific word three times is
+  // not specificity (cross-review A15).
+  return [
+    ...new Set(
+      summary
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter((token) => token.length >= 3 && !VAGUE_WORDS.has(token) && !STOPWORDS.has(token)),
+    ),
+  ];
 }
 
 function checkSummaryQuality(issue: NormalizedIssue): CheckResult {

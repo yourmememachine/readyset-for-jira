@@ -4,9 +4,14 @@
  * Shows the readiness score for the issue being viewed, the grade, and
  * the per-check breakdown with a one-line fix for every failing check.
  * Data comes from the `getIssuePanel` resolver function.
+ *
+ * Freshness (cross-review B15): the panel subscribes to Jira's
+ * issue-view events and refetches when the issue changes, so the footer
+ * claim "Scores update automatically when the issue changes" is backed
+ * by a mechanism, not just the backend trigger.
  */
 import React, { useEffect, useState } from 'react';
-import { invoke } from '@forge/bridge';
+import { events, invoke } from '@forge/bridge';
 import ForgeReconciler, {
   Box,
   Button,
@@ -21,6 +26,7 @@ import ForgeReconciler, {
   useProductContext,
 } from '@forge/react';
 import type { IssuePanelPayload } from '../functions/resolver';
+import { toUserMessage } from '../lib/user-error';
 import type { Grade } from '../lib/types';
 
 const GRADE_LABEL: Record<Grade, string> = {
@@ -59,12 +65,35 @@ function IssueContextApp() {
         if (!cancelled) setData(payload);
       })
       .catch((err: unknown) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+        if (!cancelled) setError(toUserMessage(err));
       });
     return () => {
       cancelled = true;
     };
   }, [issueKey, refreshCount]);
+
+  // Refetch when Jira reports the issue changed while the panel is open.
+  useEffect(() => {
+    if (!issueKey) return;
+    let subscription: { unsubscribe: () => void } | undefined;
+    let active = true;
+    events
+      .on('JIRA_ISSUE_CHANGED', () => {
+        if (active) setRefreshCount((count) => count + 1);
+      })
+      .then((sub) => {
+        if (active) subscription = sub;
+        else sub.unsubscribe();
+      })
+      .catch(() => {
+        // Event subscription is a freshness nicety; the Refresh button
+        // and the backend trigger still keep the panel correct.
+      });
+    return () => {
+      active = false;
+      subscription?.unsubscribe();
+    };
+  }, [issueKey]);
 
   if (!issueKey) {
     return (

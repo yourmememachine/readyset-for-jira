@@ -1,6 +1,19 @@
 import type { CheckId, ProjectSettings } from './types';
 
 /**
+ * Version of the scoring rubric itself (weights, thresholds baked into
+ * check logic, word lists). Part of the panel cache fingerprint
+ * (cross-review A8): shipping a build with retuned checks must not
+ * leave previously computed scores masquerading as fresh. Bump on any
+ * scoring-behaviour change.
+ *
+ * v2 (cross-review round 3): acceptance-criteria section must have a
+ * real body; placeholder scan covers the AC field, "TBC" and "to-do";
+ * `todo` needs marker context; summary tokens are deduplicated.
+ */
+export const RUBRIC_VERSION = '2';
+
+/**
  * Rubric weights (DESIGN.md §5.3). Sum of all weights = 100. When a check
  * is disabled in project settings, the score renormalizes over the
  * remaining weights, so the scale stays 0–100.
@@ -45,6 +58,7 @@ export const DUE_DATE_PRIORITIES: ReadonlySet<string> = new Set(['highest', 'hig
  */
 export const PLACEHOLDER_TOKENS: readonly string[] = [
   'tbd',
+  'tbc',
   'todo',
   'fixme',
   'xxx',

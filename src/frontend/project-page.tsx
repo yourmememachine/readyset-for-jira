@@ -5,6 +5,15 @@
  * the 25 lowest-scoring open issues, a manual Rescan, and the
  * per-project settings (thresholds + the two toggleable checks).
  * Data comes from the resolver functions in `src/functions/resolver.ts`.
+ *
+ * Scan model (cross-review round 3): the backend scans in bounded
+ * chunks (one search page per resolver call). The page drives the scan
+ * to completion by calling `continueScanProject` until the resolver
+ * reports `complete`, showing progress instead of blocking on a spinner
+ * that a 25 s invocation limit would kill mid-scan (B4). Failures are
+ * rendered, never swallowed (B14). Settings are admin-gated (B13) and
+ * threshold input is validated locally so an empty field can never
+ * silently zero a threshold (A17).
  */
 import React, { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@forge/bridge';
@@ -27,7 +36,9 @@ import ForgeReconciler, {
   useProductContext,
 } from '@forge/react';
 import type { ProjectDashboardPayload, ScanResult } from '../functions/resolver';
+import { parseThresholdInput } from '../lib/threshold-input';
 import type { Grade, ProjectSettings } from '../lib/types';
+import { toUserMessage } from '../lib/user-error';
 
 const GRADE_LABEL: Record<Grade, string> = {
   ready: 'Ready',
@@ -41,6 +52,9 @@ const GRADE_APPEARANCE: Record<Grade, 'success' | 'inprogress' | 'removed'> = {
   'not-ready': 'removed',
 };
 
+/** Safety cap on chunk-continuation calls per user action. */
+const MAX_SCAN_CHUNKS = 50;
+
 function extractProjectKey(context: unknown): string | null {
   const extension = (context as { extension?: Record<string, unknown> } | undefined)
     ?.extension;
@@ -51,11 +65,13 @@ function extractProjectKey(context: unknown): string | null {
 function SettingsForm({
   projectKey,
   settings,
+  canEdit,
   onSaved,
 }: {
   projectKey: string;
   settings: ProjectSettings;
-  onSaved: () => void;
+  canEdit: boolean;
+  onSaved: (saved: ProjectSettings) => void;
 }) {
   const [ready, setReady] = useState(String(settings.readyThreshold));
   const [almost, setAlmost] = useState(String(settings.almostThreshold));
@@ -65,25 +81,51 @@ function SettingsForm({
   const [message, setMessage] = useState<string | null>(null);
 
   const save = async () => {
+    const readyValue = parseThresholdInput(ready);
+    const almostValue = parseThresholdInput(almost);
+    if (readyValue === null || almostValue === null) {
+      // Local validation error — never sent to the resolver (A17).
+      setMessage('Thresholds must be numbers between 0 and 100. Empty fields are not saved.');
+      return;
+    }
     setSaving(true);
     setMessage(null);
     try {
-      await invoke<ProjectSettings>('saveSettings', {
+      const saved = await invoke<ProjectSettings>('saveSettings', {
         projectKey,
         settings: {
-          readyThreshold: Number(ready),
-          almostThreshold: Number(almost),
+          readyThreshold: readyValue,
+          almostThreshold: almostValue,
           checksEnabled: { estimate: estimateOn, 'due-date': dueDateOn },
         },
       });
+      // Adopt the resolver's normalized values so the form shows what
+      // was actually stored (A17).
+      setReady(String(saved.readyThreshold));
+      setAlmost(String(saved.almostThreshold));
+      setEstimateOn(saved.checksEnabled.estimate);
+      setDueDateOn(saved.checksEnabled['due-date']);
       setMessage('Settings saved. Scores re-bucket against the new thresholds.');
-      onSaved();
+      onSaved(saved);
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : String(err));
+      setMessage(toUserMessage(err));
     } finally {
       setSaving(false);
     }
   };
+
+  if (!canEdit) {
+    return (
+      <Stack space="space.100">
+        <Heading size="small">Project settings</Heading>
+        <Text>
+          Ready threshold: {settings.readyThreshold} · Almost threshold:{' '}
+          {settings.almostThreshold}. Only project administrators can change
+          ReadySet settings.
+        </Text>
+      </Stack>
+    );
+  }
 
   return (
     <Stack space="space.100">
@@ -139,6 +181,7 @@ function ProjectPageApp() {
   const projectKey = extractProjectKey(context);
   const [data, setData] = useState<ProjectDashboardPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [rescanning, setRescanning] = useState(false);
   const [reloadCount, setReloadCount] = useState(0);
 
@@ -150,7 +193,7 @@ function ProjectPageApp() {
         if (!cancelled) setData(payload);
       })
       .catch((err: unknown) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+        if (!cancelled) setError(toUserMessage(err));
       });
     return () => {
       cancelled = true;
@@ -182,28 +225,64 @@ function ProjectPageApp() {
   }
 
   const { stats, settings } = data;
-  const rescan = async () => {
+
+  /** Drive a scan to completion chunk by chunk, then reload. */
+  const driveScan = async (first: 'rescanProject' | 'continueScanProject') => {
     setRescanning(true);
+    setActionError(null);
     try {
-      await invoke<ScanResult>('rescanProject', { projectKey });
+      let result = await invoke<ScanResult>(first, { projectKey });
+      let guard = 0;
+      while (!result.complete && guard < MAX_SCAN_CHUNKS) {
+        result = await invoke<ScanResult>('continueScanProject', { projectKey });
+        guard += 1;
+      }
+      setReloadCount((count) => count + 1);
+    } catch (err) {
+      // A failed scan must be visible, not a silent no-op (B14).
+      setActionError(toUserMessage(err));
       setReloadCount((count) => count + 1);
     } finally {
       setRescanning(false);
     }
   };
 
+  const scanFailed = data.scanStatus === 'failed';
+  const scanIncomplete = data.scanStatus !== 'complete';
+
   return (
     <Box padding="space.300">
       <Stack space="space.300">
         <Heading size="large">ReadySet — {projectKey} readiness</Heading>
-        {stats.openScored === 0 ? (
+        {scanFailed ? (
+          <SectionMessage title="The last scan of this project failed" appearance="error">
+            <Text>
+              {data.scanError ?? 'The scan did not complete.'} Scores below may be
+              stale — use Rescan now to retry.
+            </Text>
+          </SectionMessage>
+        ) : scanIncomplete ? (
+          <SectionMessage title="Scan in progress" appearance="information">
+            <Text>
+              ReadySet is still scanning this project — showing{' '}
+              {stats.openScored} scored open issues so far. The scan continues
+              automatically; you can also press Rescan now.
+            </Text>
+          </SectionMessage>
+        ) : null}
+        {actionError ? (
+          <SectionMessage title="Scan failed" appearance="error">
+            <Text>{actionError}</Text>
+          </SectionMessage>
+        ) : null}
+        {stats.openScored === 0 && data.scanStatus === 'complete' ? (
           <SectionMessage title="No open issues scored yet" appearance="information">
             <Text>
               ReadySet scores open issues in this project. Create or update an
               issue, or run a rescan, and readiness will appear here.
             </Text>
           </SectionMessage>
-        ) : (
+        ) : stats.openScored > 0 ? (
           <>
             <Inline space="space.300">
               <Stack space="space.050">
@@ -260,15 +339,25 @@ function ProjectPageApp() {
               }))}
             />
           </>
-        )}
+        ) : null}
+        <Text>
+          Field map in use — story points: {data.fieldMap.storyPoints}, epic
+          link: {data.fieldMap.epicLink}, acceptance criteria:{' '}
+          {data.fieldMap.acceptanceCriteria ?? 'not configured (description section is used)'}.
+        </Text>
         <Inline space="space.100">
-          <Button appearance="primary" onClick={rescan} isDisabled={rescanning}>
-            {rescanning ? 'Rescanning…' : 'Rescan now'}
+          <Button
+            appearance="primary"
+            onClick={() => void driveScan(scanIncomplete && !scanFailed ? 'continueScanProject' : 'rescanProject')}
+            isDisabled={rescanning}
+          >
+            {rescanning ? 'Scanning…' : scanFailed ? 'Retry scan' : 'Rescan now'}
           </Button>
         </Inline>
         <SettingsForm
           projectKey={projectKey}
           settings={settings}
+          canEdit={data.canEditSettings}
           onSaved={() => setReloadCount((count) => count + 1)}
         />
       </Stack>

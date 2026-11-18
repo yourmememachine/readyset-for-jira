@@ -36,6 +36,30 @@ const BLOCK_TYPES = new Set([
   'decisionItem',
 ]);
 
+/**
+ * Node types whose human-readable text lives in `attrs`, not in child
+ * text nodes (cross-review A20). Dropping them undercounts real
+ * descriptions — including "Acceptance criteria" expand titles.
+ */
+const ATTRS_TEXT: Record<string, (attrs: Record<string, unknown>) => string | null> = {
+  mention: (attrs) => (typeof attrs.text === 'string' ? attrs.text : null),
+  emoji: (attrs) =>
+    typeof attrs.text === 'string'
+      ? attrs.text
+      : typeof attrs.shortName === 'string'
+        ? attrs.shortName
+        : null,
+  status: (attrs) => (typeof attrs.text === 'string' ? attrs.text : null),
+  date: (attrs) =>
+    typeof attrs.timestamp === 'string' || typeof attrs.timestamp === 'number'
+      ? String(attrs.timestamp)
+      : null,
+  expand: (attrs) => (typeof attrs.title === 'string' ? attrs.title : null),
+  nestedExpand: (attrs) => (typeof attrs.title === 'string' ? attrs.title : null),
+  inlineCard: (attrs) => (typeof attrs.url === 'string' ? attrs.url : null),
+  blockCard: (attrs) => (typeof attrs.url === 'string' ? attrs.url : null),
+};
+
 function nodeText(node: AdfNode, parts: string[]): void {
   if (typeof node.text === 'string') {
     parts.push(node.text);
@@ -43,8 +67,16 @@ function nodeText(node: AdfNode, parts: string[]): void {
   if (node.type === 'hardBreak') {
     parts.push('\n');
   }
-  if (node.type === 'mention' && typeof node.attrs?.text === 'string') {
-    parts.push(node.attrs.text as string);
+  const attrsText = ATTRS_TEXT[node.type];
+  if (attrsText && node.attrs) {
+    const text = attrsText(node.attrs);
+    if (text) {
+      parts.push(text);
+      // An expand title is a heading: it must end its own line, or it
+      // glues onto the first body word and line-anchored consumers
+      // (the rubric's AC-section detection) can never see it.
+      if (node.type === 'expand' || node.type === 'nestedExpand') parts.push('\n');
+    }
   }
   if (Array.isArray(node.content)) {
     for (const child of node.content) {
@@ -104,7 +136,10 @@ export function buildAdfFromSections(sections: DraftSection[]): AdfDoc {
     }
   }
   if (content.length === 0) {
-    content.push(paragraphNode(''));
+    // ADF text nodes must not be empty ("text must not be empty" —
+    // Atlassian Document Format spec), so the empty fallback is a
+    // paragraph with no content at all (cross-review A16).
+    content.push({ type: 'paragraph' });
   }
   return { type: 'doc', version: 1, content };
 }

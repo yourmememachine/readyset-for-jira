@@ -1,12 +1,29 @@
 /**
  * Score/settings persistence over a minimal key-value interface.
  *
- * Key scheme (DESIGN.md §5.2):
- *   score:{issueKey}      → StoredScore
- *   idx:{projectKey}      → string[] of issue keys scored in the project
- *   settings:{projectKey} → ProjectSettings
- *   projects              → string[] of project keys ReadySet has seen
- *   rescan:{projectKey}   → { nextStartAt: number } checkpoint, when present
+ * Key scheme (DESIGN.md §5.2, revised in cross-review round 3):
+ *   score:{issueKey}        → StoredScore
+ *   idx:{projectKey}:{key}  → 1 (project membership marker, one key per
+ *                             issue — cross-review A3/B6: the old single
+ *                             array value lost entries under concurrent
+ *                             writes and had a 240 KiB ceiling)
+ *   settings:{projectKey}   → ProjectSettings
+ *   proj:{projectKey}       → 1 (project registered for nightly rescan;
+ *                             written only when the dashboard is opened
+ *                             or settings are saved — cross-review B10)
+ *   rescan:{projectKey}     → scan checkpoint (opaque page token + the
+ *                             keys seen so far, for reconciliation)
+ *   scanstate:{projectKey}  → { status, updatedAt, error? }
+ *   fieldmap                → the site's resolved JiraFieldMap (B8)
+ *   rescan-roster           → { lastCompletedProject } rotation cursor
+ *                             for the nightly rescan (cross-review A18)
+ *
+ * Enumeration uses prefix listing (`list`), which on Forge KVS is
+ * eventually consistent: a just-written membership marker can briefly
+ * be missing from a listing. That trade was accepted in the debate —
+ * a transient listing lag self-heals on the next read, while the old
+ * read-modify-write array lost entries permanently and silently.
+ * Per-issue `get`s remain strictly consistent.
  *
  * Production binds {@link KeyValueStore} to Forge KVS (`forge-store.ts`);
  * tests bind it to {@link InMemoryKV}. Values are JSON-cloned in the
@@ -14,12 +31,22 @@
  * KVS would never allow) fail loudly in tests instead of in production.
  */
 import { DEFAULT_SETTINGS } from './rubric-config';
+import type { JiraFieldMap } from './jira';
 import type { ProjectSettings, StoredScore } from './types';
 
 export interface KeyValueStore {
   get<T>(key: string): Promise<T | undefined>;
   set(key: string, value: unknown): Promise<void>;
   delete(key: string): Promise<void>;
+  /**
+   * List keys under a prefix, one page at a time. `cursor` is opaque;
+   * pass the previous page's `nextCursor` to continue.
+   */
+  list(
+    prefix: string,
+    limit: number,
+    cursor?: string,
+  ): Promise<{ keys: string[]; nextCursor?: string }>;
 }
 
 export class InMemoryKV implements KeyValueStore {
@@ -38,6 +65,21 @@ export class InMemoryKV implements KeyValueStore {
     this.map.delete(key);
   }
 
+  async list(
+    prefix: string,
+    limit: number,
+    cursor?: string,
+  ): Promise<{ keys: string[]; nextCursor?: string }> {
+    const all = [...this.map.keys()].filter((key) => key.startsWith(prefix)).sort();
+    const after = cursor ? all.filter((key) => key > cursor) : all;
+    const keys = after.slice(0, limit);
+    const last = keys[keys.length - 1];
+    return {
+      keys,
+      ...(after.length > limit && last !== undefined ? { nextCursor: last } : {}),
+    };
+  }
+
   /** Test/debug helper: all keys currently held. */
   keys(): string[] {
     return [...this.map.keys()].sort();
@@ -45,86 +87,148 @@ export class InMemoryKV implements KeyValueStore {
 }
 
 export const scoreKey = (issueKey: string): string => `score:${issueKey}`;
-export const indexKey = (projectKey: string): string => `idx:${projectKey}`;
+export const memberKey = (projectKey: string, issueKey: string): string =>
+  `idx:${projectKey}:${issueKey}`;
+export const memberPrefix = (projectKey: string): string => `idx:${projectKey}:`;
 export const settingsKey = (projectKey: string): string => `settings:${projectKey}`;
 export const rescanKey = (projectKey: string): string => `rescan:${projectKey}`;
-export const PROJECTS_KEY = 'projects';
+export const scanStateKey = (projectKey: string): string => `scanstate:${projectKey}`;
+export const projectMarkerKey = (projectKey: string): string => `proj:${projectKey}`;
+export const PROJECTS_PREFIX = 'proj:';
+export const FIELDMAP_KEY = 'fieldmap';
+export const ROSTER_KEY = 'rescan-roster';
 
 export interface RescanCheckpoint {
-  nextStartAt: number;
+  /** Opaque Jira `nextPageToken`; null means "start from the first page". */
+  nextPageToken: string | null;
+  /**
+   * Keys the in-progress scan has seen so far, persisted across
+   * invocations: reconciliation after a resumed scan may only delete
+   * records outside the *complete* seen set (cross-review B-NEW-1/2).
+   */
+  seenKeys: string[];
 }
 
-function mergeSettings(stored: Partial<ProjectSettings> | undefined): ProjectSettings {
-  if (!stored) return structuredClone(DEFAULT_SETTINGS);
+export type ScanStatus = 'complete' | 'scanning' | 'failed';
+
+export interface ScanState {
+  status: ScanStatus;
+  updatedAt: string;
+  /** User-presentable failure detail when status is 'failed'. */
+  error?: string;
+}
+
+export interface RosterCheckpoint {
+  lastCompletedProject: string;
+}
+
+function clampThreshold(value: unknown, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.min(100, Math.max(0, Math.round(value)));
+}
+
+/**
+ * Merge a (possibly partial, possibly legacy) settings object over a
+ * base and normalize it: thresholds clamped to 0–100, non-finite values
+ * replaced by the base's, and almost ≤ ready enforced. Shared by the
+ * read path and the save path so the two can never disagree
+ * (cross-review A10).
+ */
+export function normalizeSettings(
+  input: Partial<ProjectSettings> | undefined,
+  base: ProjectSettings,
+): ProjectSettings {
+  const ready = clampThreshold(input?.readyThreshold, base.readyThreshold);
+  const almost = Math.min(ready, clampThreshold(input?.almostThreshold, base.almostThreshold));
   return {
-    readyThreshold: stored.readyThreshold ?? DEFAULT_SETTINGS.readyThreshold,
-    almostThreshold: stored.almostThreshold ?? DEFAULT_SETTINGS.almostThreshold,
+    readyThreshold: ready,
+    almostThreshold: almost,
     checksEnabled: {
-      ...DEFAULT_SETTINGS.checksEnabled,
-      ...(stored.checksEnabled ?? {}),
+      estimate: input?.checksEnabled?.estimate ?? base.checksEnabled.estimate,
+      'due-date': input?.checksEnabled?.['due-date'] ?? base.checksEnabled['due-date'],
     },
   };
 }
 
+const LIST_PAGE_SIZE = 100;
+
 export class ScoreStore {
   constructor(private readonly kv: KeyValueStore) {}
 
+  /** Enumerate every key under a prefix, following cursors. */
+  private async listAllKeys(prefix: string): Promise<string[]> {
+    const keys: string[] = [];
+    let cursor: string | undefined;
+    for (;;) {
+      const page = await this.kv.list(prefix, LIST_PAGE_SIZE, cursor);
+      keys.push(...page.keys);
+      if (!page.nextCursor) return keys;
+      cursor = page.nextCursor;
+    }
+  }
+
   async saveScore(record: StoredScore): Promise<void> {
+    const previous = await this.getScore(record.issueKey);
+    if (previous && previous.projectKey !== record.projectKey) {
+      // The issue moved projects: drop the stale membership so the old
+      // project stops counting it immediately (cross-review A2).
+      await this.kv.delete(memberKey(previous.projectKey, record.issueKey));
+    }
     await this.kv.set(scoreKey(record.issueKey), record);
-    const idx = (await this.kv.get<string[]>(indexKey(record.projectKey))) ?? [];
-    if (!idx.includes(record.issueKey)) {
-      idx.push(record.issueKey);
-      await this.kv.set(indexKey(record.projectKey), idx);
-    }
-    const projects = (await this.kv.get<string[]>(PROJECTS_KEY)) ?? [];
-    if (!projects.includes(record.projectKey)) {
-      projects.push(record.projectKey);
-      await this.kv.set(PROJECTS_KEY, projects);
-    }
+    await this.kv.set(memberKey(record.projectKey, record.issueKey), 1);
   }
 
   async getScore(issueKey: string): Promise<StoredScore | undefined> {
     return this.kv.get<StoredScore>(scoreKey(issueKey));
   }
 
-  async getProjectScores(projectKey: string): Promise<StoredScore[]> {
-    const idx = (await this.kv.get<string[]>(indexKey(projectKey))) ?? [];
-    const records: StoredScore[] = [];
-    for (const issueKey of idx) {
-      const record = await this.kv.get<StoredScore>(scoreKey(issueKey));
-      if (record) records.push(record);
+  /** Remove a score and its project membership (delete / reconcile). */
+  async deleteScore(issueKey: string): Promise<void> {
+    const record = await this.getScore(issueKey);
+    if (record) {
+      await this.kv.delete(memberKey(record.projectKey, issueKey));
     }
-    return records;
+    await this.kv.delete(scoreKey(issueKey));
   }
 
-  /** True once a project has been scanned or any of its issues scored. */
-  async hasProjectIndex(projectKey: string): Promise<boolean> {
-    return (await this.kv.get<string[]>(indexKey(projectKey))) !== undefined;
+  async getProjectScores(projectKey: string): Promise<StoredScore[]> {
+    const prefix = memberPrefix(projectKey);
+    const keys = await this.listAllKeys(prefix);
+    const issueKeys = keys.map((key) => key.slice(prefix.length));
+    const records = await Promise.all(
+      issueKeys.map((issueKey) => this.kv.get<StoredScore>(scoreKey(issueKey))),
+    );
+    return records.filter(
+      (record): record is StoredScore =>
+        record !== undefined && record.projectKey === projectKey,
+    );
   }
 
   /**
-   * Record that a project was scanned even if it produced no scores, so
-   * "scanned, nothing open" is distinguishable from "never scanned" and
-   * empty projects are not rescanned on every dashboard open.
+   * Register a project for the nightly rescan. Called when its
+   * dashboard is opened or its settings are saved — NOT on every scored
+   * issue (cross-review B10 / DESIGN.md §5.6).
    */
-  async markProjectScanned(projectKey: string): Promise<void> {
-    if (!(await this.hasProjectIndex(projectKey))) {
-      await this.kv.set(indexKey(projectKey), []);
-    }
-    const projects = (await this.kv.get<string[]>(PROJECTS_KEY)) ?? [];
-    if (!projects.includes(projectKey)) {
-      projects.push(projectKey);
-      await this.kv.set(PROJECTS_KEY, projects);
-    }
+  async registerProject(projectKey: string): Promise<void> {
+    await this.kv.set(projectMarkerKey(projectKey), 1);
   }
 
   async getKnownProjects(): Promise<string[]> {
-    return (await this.kv.get<string[]>(PROJECTS_KEY)) ?? [];
+    const keys = await this.listAllKeys(PROJECTS_PREFIX);
+    return keys.map((key) => key.slice(PROJECTS_PREFIX.length));
+  }
+
+  async getScanState(projectKey: string): Promise<ScanState | undefined> {
+    return this.kv.get<ScanState>(scanStateKey(projectKey));
+  }
+
+  async setScanState(projectKey: string, state: ScanState): Promise<void> {
+    await this.kv.set(scanStateKey(projectKey), state);
   }
 
   async getSettings(projectKey: string): Promise<ProjectSettings> {
     const stored = await this.kv.get<Partial<ProjectSettings>>(settingsKey(projectKey));
-    return mergeSettings(stored);
+    return normalizeSettings(stored, DEFAULT_SETTINGS);
   }
 
   async saveSettings(projectKey: string, settings: ProjectSettings): Promise<void> {
@@ -141,5 +245,21 @@ export class ScoreStore {
 
   async clearRescanCheckpoint(projectKey: string): Promise<void> {
     await this.kv.delete(rescanKey(projectKey));
+  }
+
+  async getFieldMap(): Promise<JiraFieldMap | undefined> {
+    return this.kv.get<JiraFieldMap>(FIELDMAP_KEY);
+  }
+
+  async setFieldMap(fieldMap: JiraFieldMap): Promise<void> {
+    await this.kv.set(FIELDMAP_KEY, fieldMap);
+  }
+
+  async getRosterCheckpoint(): Promise<RosterCheckpoint | undefined> {
+    return this.kv.get<RosterCheckpoint>(ROSTER_KEY);
+  }
+
+  async setRosterCheckpoint(checkpoint: RosterCheckpoint): Promise<void> {
+    await this.kv.set(ROSTER_KEY, checkpoint);
   }
 }

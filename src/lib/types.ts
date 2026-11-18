@@ -88,6 +88,20 @@ export interface ProjectSettings {
   };
 }
 
+/**
+ * Provenance of a stored score — which input the score was computed
+ * from. The event handler's cache early-exit (cross-review B10) only
+ * trusts records whose input is known complete; records written before
+ * provenance existed (`undefined`) are rescored once and healed
+ * (cross-review A-NEW-3).
+ *
+ * - `rest`: computed from a full REST issue fetch (panel, scans, and
+ *   the event handler's fallback when custom fields were omitted).
+ * - `event`: computed from an event payload whose custom fields were
+ *   delivered (`customFieldsStatus: INCLUDED`) and merged in.
+ */
+export type ScoreSource = 'rest' | 'event';
+
 /** What gets cached in KVS per issue (`score:{issueKey}`). */
 export interface StoredScore extends ReadinessScore {
   projectKey: string;
@@ -99,11 +113,14 @@ export interface StoredScore extends ReadinessScore {
   /** ISO timestamp of when ReadySet computed this score. */
   computedAt: string;
   /**
-   * Fingerprint of the settings (thresholds + enabled checks) this score
-   * was computed under. A cache entry is only reused when the fingerprint
-   * still matches the project's current settings.
+   * Fingerprint of everything the score depends on besides the issue
+   * itself: project settings, the rubric version, and the effective
+   * Jira field map (cross-review A8). A cache entry is only reused when
+   * the fingerprint still matches.
    */
   settingsFingerprint: string;
+  /** Which input produced this record; absent on pre-provenance records. */
+  source?: ScoreSource;
 }
 
 export interface ProjectStats {

@@ -231,6 +231,66 @@ describe('labels/components and ownership checks', () => {
   });
 });
 
+describe('cross-review round 3 — rubric regressions', () => {
+  it('A5: a bare "acceptance criteria" mention mid-sentence is not a section', () => {
+    const result = scoreIssue(
+      makeIssue({
+        descriptionText:
+          'We discussed the acceptance criteria with the team last week and everyone agrees they matter a lot for this rollout.',
+      }),
+    );
+    expect(check(result, 'acceptance-criteria').passed).toBe(false);
+  });
+
+  it('A5: an "Acceptance criteria: TBD" heading with no real body fails', () => {
+    const result = scoreIssue(makeIssue({ descriptionText: 'Acceptance criteria: TBD' }));
+    expect(check(result, 'acceptance-criteria').passed).toBe(false);
+  });
+
+  it('A5: a real acceptance criteria section still passes', () => {
+    const result = scoreIssue(
+      makeIssue({
+        descriptionText:
+          'Some context first.\n\nAcceptance criteria:\n- Returns 429 when the limit is exceeded.\n- Retry-After header is set.',
+      }),
+    );
+    expect(check(result, 'acceptance-criteria').passed).toBe(true);
+  });
+
+  it('A12: placeholder text in the dedicated AC field fails no-placeholders', () => {
+    const result = scoreIssue(
+      makeIssue({ acceptanceCriteriaText: 'TBD — write these later' }),
+    );
+    const placeholderCheck = check(result, 'no-placeholders');
+    expect(placeholderCheck.passed).toBe(false);
+    expect(placeholderCheck.detail).toContain('Acceptance criteria field');
+  });
+
+  it('A13: "todo" as product vocabulary does not trip the placeholder check', () => {
+    const result = scoreIssue(
+      makeIssue({ summary: 'Add todo list sharing to the mobile app' }),
+    );
+    expect(check(result, 'no-placeholders').passed).toBe(true);
+  });
+
+  it('A14: "Owner: TBC" fails the placeholder check', () => {
+    const result = scoreIssue(makeIssue({ descriptionText: 'Owner: TBC' }));
+    expect(check(result, 'no-placeholders').passed).toBe(false);
+  });
+
+  it('A14: hyphenated "to-do" is detected as a marker', () => {
+    const result = scoreIssue(
+      makeIssue({ descriptionText: 'Still to-do: write the migration' }),
+    );
+    expect(check(result, 'no-placeholders').passed).toBe(false);
+  });
+
+  it('A15: repeating one specific token does not fake summary specificity', () => {
+    const result = scoreIssue(makeIssue({ summary: 'Cache cache cache cache' }));
+    expect(check(result, 'summary-quality').passed).toBe(false);
+  });
+});
+
 describe('settings: toggles and thresholds', () => {
   it('renormalizes to 100 when the only failing check is disabled', () => {
     const issue = makeIssue({ storyPoints: null, originalEstimateSeconds: null });

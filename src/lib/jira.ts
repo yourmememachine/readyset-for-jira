@@ -25,7 +25,10 @@ export interface RawJiraIssue {
     issuelinks?: Array<unknown>;
     parent?: { key?: string } | null;
     duedate?: string | null;
+    /** Remaining estimate (seconds) — NOT the original estimate (A6). */
     timeestimate?: number | null;
+    /** Original estimate (seconds). */
+    timeoriginalestimate?: number | null;
     status?: { name?: string; statusCategory?: { key?: string } };
     project?: { key?: string };
     updated?: string;
@@ -33,16 +36,80 @@ export interface RawJiraIssue {
   };
 }
 
+/**
+ * One page of JQL search results from `POST /rest/api/3/search/jql`.
+ * The legacy `/rest/api/3/search` endpoint was removed from Jira Cloud
+ * (HTTP 410, CHANGE-2046); the replacement paginates with an opaque
+ * `nextPageToken` — there is no `total` and no offset, pages are not
+ * guaranteed full, and iteration ends when `isLast` is true
+ * (cross-review B1).
+ */
 export interface SearchPage {
   issues: RawJiraIssue[];
-  total: number;
-  startAt: number;
-  maxResults: number;
+  isLast: boolean;
+  nextPageToken?: string;
+}
+
+/** One entry of `GET /rest/api/3/field` (cross-review B8). */
+export interface JiraFieldInfo {
+  id: string;
+  name: string;
+  custom: boolean;
+}
+
+/**
+ * Thrown by adapters when Jira rejects a pagination token (expired or
+ * rotated). Scan code restarts the scan on this error only — any other
+ * failure checkpoints and surfaces, so a persistent error can never
+ * turn into a restart loop (cross-review A-NEW-2).
+ */
+export class InvalidPageTokenError extends Error {
+  constructor(token: string) {
+    super(`Invalid or expired page token: ${token}`);
+    this.name = 'InvalidPageTokenError';
+  }
 }
 
 export interface JiraAdapter {
-  getIssue(issueKey: string): Promise<RawJiraIssue>;
-  searchIssues(jql: string, startAt: number, maxResults: number): Promise<SearchPage>;
+  getIssue(issueKey: string, fieldMap?: JiraFieldMap): Promise<RawJiraIssue>;
+  searchIssues(
+    jql: string,
+    pageToken: string | null,
+    maxResults: number,
+    fieldMap?: JiraFieldMap,
+  ): Promise<SearchPage>;
+  /** All fields visible on the site, for runtime field-map resolution. */
+  listFields(): Promise<JiraFieldInfo[]>;
+  /**
+   * Whether the *current user* holds a project permission (checked via
+   * `asUser`). Used to gate project settings (cross-review B13).
+   */
+  hasProjectPermission(projectKey: string, permission: string): Promise<boolean>;
+}
+
+/**
+ * Resolve the site-specific field map from the site's field list by
+ * matching field *names* (cross-review B8). Falls back to the default
+ * ids for anything the site doesn't expose under a known name, so a
+ * site that hides its field list degrades to the previous behaviour
+ * instead of breaking.
+ */
+export function resolveFieldMap(fields: JiraFieldInfo[]): JiraFieldMap {
+  const byName = new Map(fields.map((field) => [field.name.trim().toLowerCase(), field.id]));
+  const pick = (names: string[], fallback: string | null): string | null => {
+    for (const name of names) {
+      const id = byName.get(name);
+      if (id) return id;
+    }
+    return fallback;
+  };
+  return {
+    storyPoints:
+      pick(['story points', 'story point estimate'], DEFAULT_FIELD_MAP.storyPoints) ??
+      DEFAULT_FIELD_MAP.storyPoints,
+    epicLink: pick(['epic link'], DEFAULT_FIELD_MAP.epicLink) ?? DEFAULT_FIELD_MAP.epicLink,
+    acceptanceCriteria: pick(['acceptance criteria'], DEFAULT_FIELD_MAP.acceptanceCriteria),
+  };
 }
 
 /**
@@ -94,7 +161,13 @@ export function normalizeIssue(
         ? null
         : extractTextFromAdf(acceptanceRaw),
     storyPoints: asNumber(fields[fieldMap.storyPoints]),
-    originalEstimateSeconds: asNumber(fields.timeestimate),
+    // `timeestimate` is the REMAINING estimate; the original estimate
+    // is `timeoriginalestimate`. Prefer the original and fall back to
+    // remaining (a positive remaining is itself evidence an estimate
+    // was set) — otherwise a fully-logged issue fails the estimate
+    // check precisely because work was logged (cross-review A6).
+    originalEstimateSeconds:
+      asNumber(fields.timeoriginalestimate) ?? asNumber(fields.timeestimate),
     priority: fields.priority?.name ?? null,
     assignee: fields.assignee?.displayName ?? null,
     labels: fields.labels ?? [],
@@ -116,17 +189,53 @@ export function projectScanJql(projectKey: string): string {
   return `project = "${projectKey}" AND statusCategory != Done ORDER BY key ASC`;
 }
 
+const FAKE_TOKEN_PREFIX = 'pg:';
+
+function encodeFakeToken(offset: number): string {
+  return `${FAKE_TOKEN_PREFIX}${offset}`;
+}
+
+function decodeFakeToken(token: string | null): number {
+  if (token === null) return 0;
+  if (!token.startsWith(FAKE_TOKEN_PREFIX)) {
+    throw new InvalidPageTokenError(token);
+  }
+  const offset = Number(token.slice(FAKE_TOKEN_PREFIX.length));
+  if (!Number.isInteger(offset) || offset < 0) {
+    throw new InvalidPageTokenError(token);
+  }
+  return offset;
+}
+
+const DEFAULT_FAKE_FIELDS: JiraFieldInfo[] = [
+  { id: 'customfield_10016', name: 'Story Points', custom: true },
+  { id: 'customfield_10014', name: 'Epic Link', custom: true },
+  { id: 'summary', name: 'Summary', custom: false },
+  { id: 'description', name: 'Description', custom: false },
+];
+
 /**
  * In-memory JiraAdapter for tests. searchIssues understands exactly the
  * JQL shape {@link projectScanJql} produces (project key + open-only);
  * anything else returns everything it holds. That narrowness is
  * deliberate: the fake models the queries the app actually issues.
+ *
+ * Pagination models the real `/search/jql` contract (cross-review B1):
+ * opaque tokens (here `pg:{offset}` — the encoding is the fake's own
+ * business), `isLast` termination, and an error for a malformed token,
+ * mirroring Jira's 400 on a bad `nextPageToken`.
  */
 export class FakeJiraAdapter implements JiraAdapter {
   readonly getIssueCalls: string[] = [];
-  readonly searchCalls: Array<{ jql: string; startAt: number; maxResults: number }> = [];
+  readonly searchCalls: Array<{ jql: string; pageToken: string | null; maxResults: number }> = [];
+  readonly listFieldsCalls: number[] = [];
+  /** Projects the "current user" administers; empty = all projects. */
+  adminProjects: ReadonlySet<string> | null = null;
 
-  constructor(private readonly issues: RawJiraIssue[]) {}
+  constructor(
+    private readonly issues: RawJiraIssue[],
+    private readonly fields: JiraFieldInfo[] = DEFAULT_FAKE_FIELDS,
+  ) {}
 
   async getIssue(issueKey: string): Promise<RawJiraIssue> {
     this.getIssueCalls.push(issueKey);
@@ -135,8 +244,13 @@ export class FakeJiraAdapter implements JiraAdapter {
     return structuredClone(issue);
   }
 
-  async searchIssues(jql: string, startAt: number, maxResults: number): Promise<SearchPage> {
-    this.searchCalls.push({ jql, startAt, maxResults });
+  async searchIssues(
+    jql: string,
+    pageToken: string | null,
+    maxResults: number,
+  ): Promise<SearchPage> {
+    this.searchCalls.push({ jql, pageToken, maxResults });
+    const startAt = decodeFakeToken(pageToken);
     const projectMatch = jql.match(/project\s*=\s*"([^"]+)"/);
     let pool = this.issues;
     if (projectMatch) {
@@ -146,11 +260,22 @@ export class FakeJiraAdapter implements JiraAdapter {
       pool = pool.filter((issue) => issue.fields.status?.statusCategory?.key !== 'done');
     }
     const sorted = [...pool].sort((a, b) => a.key.localeCompare(b.key));
+    const pageIssues = sorted.slice(startAt, startAt + maxResults);
+    const nextOffset = startAt + pageIssues.length;
+    const isLast = nextOffset >= sorted.length;
     return {
-      issues: structuredClone(sorted.slice(startAt, startAt + maxResults)),
-      total: sorted.length,
-      startAt,
-      maxResults,
+      issues: structuredClone(pageIssues),
+      isLast,
+      ...(isLast ? {} : { nextPageToken: encodeFakeToken(nextOffset) }),
     };
+  }
+
+  async listFields(): Promise<JiraFieldInfo[]> {
+    this.listFieldsCalls.push(1);
+    return structuredClone(this.fields);
+  }
+
+  async hasProjectPermission(projectKey: string): Promise<boolean> {
+    return this.adminProjects === null || this.adminProjects.has(projectKey);
   }
 }
