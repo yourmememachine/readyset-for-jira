@@ -125,7 +125,7 @@ npm run typecheck   # tsc --noEmit
 npm run lint:manifest
 ```
 
-**Tests: 170 passing across 11 files** — the rubric (fixture issues with
+**Tests: 172 passing across 11 files** — the rubric (fixture issues with
 hand-computed scores: fully specified = exactly 100, empty = 15, messy =
 20), handlers (including a 150-issue pagination run and checkpoint resume
 across projects), the Improve flow (LLM draft, template fallback lifting
