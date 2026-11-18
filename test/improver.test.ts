@@ -29,10 +29,16 @@ const GOOD_MARKDOWN = [
   '## Goal',
   'Add token-bucket rate limiting to the public API gateway so that a single noisy integration cannot degrade latency for every other merchant on the platform.',
   '',
+  '## Context',
+  'The gateway currently lets any single integration consume the full request budget, and support tickets trace the worst latency spikes to exactly that pattern.',
+  '',
   '## Acceptance criteria',
   '- Requests beyond the configured quota return HTTP 429 with a Retry-After header.',
   '- Quota is configurable per API key without a deploy.',
   '- Metrics expose rejected-request counts per API key.',
+  '',
+  '## Definition of done',
+  'The limiter is live on the public gateway, the per-key metrics are visible on the operations dashboard, and the runbook documents how to raise a quota.',
 ].join('\n');
 
 function makeImproverDeps(issues: RawJiraIssue[], llm: LlmClient, store?: ScoreStore) {
@@ -154,7 +160,9 @@ describe('improveIssue', () => {
     expect(result.projectedScore).toBeGreaterThan(20);
     expect(result.sections.map((section) => section.heading)).toEqual([
       'Goal',
+      'Context',
       'Acceptance criteria',
+      'Definition of done',
     ]);
     expect(llm.calls).toHaveLength(1);
     // The LLM was told which checks fail.

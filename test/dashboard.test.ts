@@ -60,6 +60,24 @@ describe('becameReadyLast7Days (Wave 2)', () => {
     // (outside the window).
     expect(stats.becameReadyLast7Days).toEqual({ count: 1, total: 3, percent: 33.3 });
   });
+
+  it('counts a transition the history cap evicted, via the durable stamp (A7)', () => {
+    const stats = computeProjectStats(
+      'RS',
+      [
+        record({
+          issueKey: 'RS-9',
+          score: 95,
+          lastBecameReadyAt: '2026-11-16T00:00:00.000Z',
+          history: [{ score: 95, grade: 'ready', at: '2026-11-16T00:00:00.000Z' }],
+        }),
+      ],
+      DEFAULT_SETTINGS,
+      25,
+      NOW,
+    );
+    expect(stats.becameReadyLast7Days.count).toBe(1);
+  });
 });
 
 describe('offender filters (Wave 2)', () => {

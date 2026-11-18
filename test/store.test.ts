@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_SETTINGS } from '../src/lib/rubric-config';
-import { InMemoryKV, ScoreStore, normalizeSettings } from '../src/lib/store';
+import { InMemoryKV, ScoreStore, normalizeImproveSections, normalizeSettings } from '../src/lib/store';
 import type { ProjectSettings, StoredScore } from '../src/lib/types';
 
 function record(issueKey: string, projectKey: string, score = 90): StoredScore {
@@ -197,6 +197,29 @@ describe('score history (upgrade pack, review #3)', () => {
     await store.saveScore(record('RS-1', 'RS', 80));
     expect((await store.getScore('RS-1'))?.history?.map((entry) => entry.score)).toEqual([55, 80]);
   });
+
+  it('stamps lastBecameReadyAt on a transition into Ready, never on first sight (A7)', async () => {
+    const kv = new InMemoryKV();
+    const store = new ScoreStore(kv);
+    await store.saveScore({ ...record('RS-1', 'RS', 95) });
+    expect((await store.getScore('RS-1'))?.lastBecameReadyAt).toBeUndefined();
+    await store.saveScore({ ...record('RS-2', 'RS', 20), grade: 'not-ready' });
+    await store.saveScore({ ...record('RS-2', 'RS', 90), grade: 'ready' });
+    expect((await store.getScore('RS-2'))?.lastBecameReadyAt).toBe('2026-11-17T10:05:00.000Z');
+  });
+
+  it('the became-Ready stamp survives the 10-entry history cap (A7)', async () => {
+    const kv = new InMemoryKV();
+    const store = new ScoreStore(kv);
+    await store.saveScore({ ...record('RS-1', 'RS', 10), grade: 'not-ready' });
+    await store.saveScore({ ...record('RS-1', 'RS', 90), grade: 'ready' });
+    for (let score = 91; score <= 100; score += 1) {
+      await store.saveScore({ ...record('RS-1', 'RS', score), grade: 'ready' });
+    }
+    const saved = await store.getScore('RS-1');
+    expect(saved?.history?.some((entry) => entry.grade !== 'ready')).toBe(false);
+    expect(saved?.lastBecameReadyAt).toBe('2026-11-17T10:05:00.000Z');
+  });
 });
 
 describe('normalizeSettings weights (Wave 2)', () => {
@@ -227,5 +250,48 @@ describe('normalizeSettings weights (Wave 2)', () => {
     const merged = normalizeSettings(legacy, DEFAULT_SETTINGS);
     expect(merged.weights).toEqual(DEFAULT_SETTINGS.weights);
     expect(merged.checksEnabled.description).toBe(true);
+  });
+
+  it('an all-disabled check map falls back to the base toggles (A2)', () => {
+    const allOff = Object.fromEntries(
+      Object.keys(DEFAULT_SETTINGS.checksEnabled).map((id) => [id, false]),
+    ) as ProjectSettings['checksEnabled'];
+    const merged = normalizeSettings({ checksEnabled: allOff }, DEFAULT_SETTINGS);
+    expect(merged.checksEnabled).toEqual(DEFAULT_SETTINGS.checksEnabled);
+  });
+});
+
+describe('normalizeImproveSections (Wave 2 cross-review)', () => {
+  it('drops a heading that merely contains the AC phrase and inserts the canonical one (A3)', () => {
+    const merged = normalizeImproveSections(
+      ['Goal', 'Team acceptance criteria', 'Notes'],
+      DEFAULT_SETTINGS.improveSections,
+    );
+    expect(merged).toEqual(['Goal', 'Acceptance criteria', 'Notes']);
+  });
+
+  it('collapses duplicate AC headings to the first (A4)', () => {
+    const merged = normalizeImproveSections(
+      ['Goal', 'Acceptance criteria', 'Acceptance criteria (extended)', 'Notes'],
+      DEFAULT_SETTINGS.improveSections,
+    );
+    expect(merged.filter((name) => /^acceptance criteria/i.test(name))).toHaveLength(1);
+  });
+
+  it('never returns more than six sections, even after inserting the AC heading (A4)', () => {
+    const merged = normalizeImproveSections(
+      ['Alpha', 'Beta', 'Gamma', 'Delta', 'Epsilon', 'Zeta'],
+      DEFAULT_SETTINGS.improveSections,
+    );
+    expect(merged).toHaveLength(6);
+    expect(merged.some((name) => /^acceptance criteria\b/i.test(name))).toBe(true);
+  });
+
+  it('keeps an anchored AC variant the admin chose', () => {
+    const merged = normalizeImproveSections(
+      ['Goal', 'Acceptance criteria (done when)', 'Notes'],
+      DEFAULT_SETTINGS.improveSections,
+    );
+    expect(merged).toEqual(['Goal', 'Acceptance criteria (done when)', 'Notes']);
   });
 });

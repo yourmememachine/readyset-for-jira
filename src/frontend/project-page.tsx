@@ -160,17 +160,12 @@ function SettingsForm({
     );
   };
 
-  const reset = async () => {
-    await persist(
-      {
-        readyThreshold: DEFAULT_SETTINGS.readyThreshold,
-        almostThreshold: DEFAULT_SETTINGS.almostThreshold,
-        checksEnabled: { ...DEFAULT_SETTINGS.checksEnabled },
-        weights: { ...DEFAULT_SETTINGS.weights },
-        improveSections: [...DEFAULT_SETTINGS.improveSections],
-      },
-      'Settings reset to the recommended rubric.',
-    );
+  const reset = () => {
+    // Stage the recommended values into the form rather than saving
+    // them on the spot (cross-review B7): the admin sees exactly what
+    // will change and confirms with Save settings.
+    adopt(DEFAULT_SETTINGS);
+    setMessage('Form reset to the recommended values — press Save settings to apply them.');
   };
 
   if (!canEdit) {
@@ -243,7 +238,7 @@ function SettingsForm({
           onChange={(event) => setSectionsText(event.target.value)}
         />
         <Text>
-          One heading must contain "Acceptance criteria" — the rubric reads that section. If
+          One heading must start with "Acceptance criteria" — the rubric reads that section. If
           none does, it is added automatically.
         </Text>
       </Box>
@@ -405,6 +400,7 @@ function ProjectPageApp() {
               onChange={setOffenderFilter}
             />
             <DynamicTable
+              emptyView={<Text>No issues in the lowest-scoring list match these filters.</Text>}
               head={{
                 cells: [
                   { key: 'issue', content: 'Issue' },
@@ -463,6 +459,7 @@ function ProjectPageApp() {
           </Button>
         </Inline>
         <SettingsForm
+          key={JSON.stringify(settings)}
           projectKey={projectKey}
           settings={settings}
           canEdit={data.canEditSettings}

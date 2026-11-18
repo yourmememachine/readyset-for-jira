@@ -149,6 +149,17 @@ describe('getIssuePanel', () => {
     expect(after.score).toBe(100);
   });
 
+  it('A1 (Wave 2 review): saving settings marks the project scan stale', async () => {
+    const { deps } = makeDeps([makeRawIssueNoEstimate()]);
+    await deps.store.setScanState('RS', { status: 'complete', updatedAt: '2026-11-17T00:00:00.000Z' });
+    await saveSettings(deps, {
+      projectKey: 'RS',
+      settings: { ...DEFAULT_SETTINGS, readyThreshold: 90 },
+    });
+    const state = await deps.store.getScanState('RS');
+    expect(state?.status).toBe('scanning');
+  });
+
   it('A8: rescores when the effective field map changes under an unchanged issue', async () => {
     const { deps, store } = makeDeps([
       makeRawIssue({ customfield_10016: null, customfield_10042: 5 }),

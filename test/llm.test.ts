@@ -10,15 +10,26 @@ describe('parseDraftMarkdown', () => {
         '## Goal',
         'Add token-bucket rate limiting to the public API gateway so noisy integrations cannot degrade latency for everyone.',
         '',
+        '## Context',
+        'One integration can currently consume the whole request budget.',
+        '',
         '## Acceptance criteria',
         '- Requests beyond quota return HTTP 429 with a Retry-After header.',
         '- Quota is configurable per API key without a deploy.',
+        '',
+        '## Definition of done',
+        'The limiter is live and the runbook documents quota changes.',
       ].join('\n'),
     );
-    expect(sections.map((section) => section.heading)).toEqual(['Goal', 'Acceptance criteria']);
+    expect(sections.map((section) => section.heading)).toEqual([
+      'Goal',
+      'Context',
+      'Acceptance criteria',
+      'Definition of done',
+    ]);
     expect(sections[0]?.paragraphs).toHaveLength(1);
     // Bullets become their own paragraphs, markers stripped.
-    expect(sections[1]?.paragraphs).toEqual([
+    expect(sections[2]?.paragraphs).toEqual([
       'Requests beyond quota return HTTP 429 with a Retry-After header.',
       'Quota is configurable per API key without a deploy.',
     ]);
@@ -32,14 +43,34 @@ describe('parseDraftMarkdown', () => {
         '## Goal',
         'Ship it safely.',
         '',
+        '## Context',
+        'Shipping safely matters here.',
+        '',
         '## Acceptance criteria',
         '- The change is verified in production.',
+        '',
+        '## Definition of done',
+        'Verified in production and announced to the team.',
       ].join('\n'),
     );
     expect(sections[0]?.heading).toBe('');
     expect(sections[0]?.paragraphs[0]).toContain('preamble');
     expect(sections[1]?.heading).toBe('Goal');
-    expect(sections[2]?.heading).toBe('Acceptance criteria');
+    expect(sections[3]?.heading).toBe('Acceptance criteria');
+  });
+
+  it('throws when a configured section is missing from the reply (A6)', () => {
+    const missingContext = [
+      '## Goal',
+      'Ship the thing with enough surrounding detail to be a usable draft body.',
+      '',
+      '## Acceptance criteria',
+      '- The change is verified in production.',
+      '',
+      '## Definition of done',
+      'Verified in production and announced to the team.',
+    ].join('\n');
+    expect(() => parseDraftMarkdown(missingContext)).toThrow(/missing configured section/);
   });
 
   it('throws on a refusal-style reply that ignores the section contract', () => {

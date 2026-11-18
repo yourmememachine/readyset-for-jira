@@ -159,6 +159,13 @@ export interface StoredScore extends ReadinessScore {
   /** Issue type at compute time (Wave 2 dashboard filters). Absent on
    *  records written before the field existed, until rescored. */
   issueType?: string;
+  /**
+   * ISO timestamp of the most recent transition INTO Ready (Wave 2
+   * cross-review A7). Maintained by ScoreStore.saveScore so the
+   * became-Ready stat survives the 10-entry history cap; sticky — a
+   * later drop out of Ready does not erase that it became Ready.
+   */
+  lastBecameReadyAt?: string;
   /** Assignee display name at compute time; null when unassigned. */
   assignee?: string | null;
   /** Labels at compute time. */

@@ -150,5 +150,17 @@ export function parseDraftMarkdown(
   if (!hasAcceptanceCriteria) {
     throw new Error('ReadySet: LLM draft reply ignored the section contract');
   }
+  // Every configured section must be present (cross-review A6): the
+  // admin's structure is the contract, and a draft silently omitting a
+  // configured section would apply a shape nobody chose. Extra sections
+  // and ordering are tolerated — the projected score is computed by the
+  // real rubric over whatever is applied, so nothing hides.
+  const present = new Set(sections.map((section) => section.heading.trim().toLowerCase()));
+  const missing = expectedSections.filter((name) => !present.has(name.trim().toLowerCase()));
+  if (missing.length > 0) {
+    throw new Error(
+      `ReadySet: LLM draft reply is missing configured section(s): ${missing.join(', ')}`,
+    );
+  }
   return sections;
 }

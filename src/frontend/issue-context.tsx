@@ -51,7 +51,7 @@ import {
   type ImproveFlowState,
 } from '../lib/improve-flow';
 import { toUserMessage } from '../lib/user-error';
-import { scoreFeedbackHref } from '../lib/feedback';
+import { SUPPORT_EMAIL, scoreFeedbackHref } from '../lib/feedback';
 import type { Grade } from '../lib/types';
 
 const GRADE_LABEL: Record<Grade, string> = {
@@ -361,6 +361,7 @@ function IssueContextApp() {
           <Link href={scoreFeedbackHref(issueKey, data.score, data.grade)}>
             Report an incorrect score
           </Link>
+          <Text>{SUPPORT_EMAIL}</Text>
         </Inline>
         <Text>Scores update automatically when the issue changes.</Text>
       </Stack>

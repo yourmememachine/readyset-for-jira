@@ -15,6 +15,10 @@ const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** Did this record transition into Ready inside the window? */
 function becameReadyInWindow(record: StoredScore, windowStartMs: number): boolean {
+  // The durable stamp survives the history cap (cross-review A7).
+  if (record.lastBecameReadyAt && Date.parse(record.lastBecameReadyAt) >= windowStartMs) {
+    return true;
+  }
   const history = record.history ?? [];
   for (let i = 1; i < history.length; i += 1) {
     const entry = history[i];

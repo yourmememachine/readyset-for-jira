@@ -139,7 +139,10 @@ modules:
         transparent rubric: description depth, acceptance criteria, estimate,
         priority, assignee, labels/components, linked work, unresolved
         placeholders (TBD/TODO), summary quality, and due dates on high-priority
-        work. Grades: Ready (80+), Almost (60-79), Not ready (below 60).
+        work. Grades: Ready (80+), Almost (60-79), Not ready (below 60) by
+        default — thresholds and check weights are per-project settings, so
+        always trust the grades and weights your actions return over these
+        defaults.
 
         Your actions: - fetch-issue-readiness - one issue's score and its
         per-check explanation. Use it for "How ready is ABC-123?" and "Why isn't

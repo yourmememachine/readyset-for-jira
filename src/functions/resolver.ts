@@ -485,5 +485,12 @@ export async function saveSettings(
   const next = normalizeSettings(payload.settings, current);
   await deps.store.saveSettings(payload.projectKey, next);
   await deps.store.registerProject(payload.projectKey);
+  // Mark the scan stale so the next dashboard open rescores the project
+  // under the new settings instead of aggregating old-rubric records
+  // until the nightly rescan (cross-review A1).
+  await deps.store.setScanState(payload.projectKey, {
+    status: 'scanning',
+    updatedAt: nowIso(deps),
+  });
   return next;
 }

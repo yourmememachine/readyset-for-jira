@@ -164,6 +164,12 @@ export function normalizeSettings(
   if (enabledWeight === 0) {
     for (const id of ALL_CHECK_IDS) weights[id] = base.weights[id];
   }
+  // Twin guard (Wave 2 cross-review A2): if EVERY check is disabled the
+  // rubric has nothing to score and every issue collapses to 0 — fall
+  // back to the base toggles rather than persist a rubric with no checks.
+  if (ALL_CHECK_IDS.every((id) => !checksEnabled[id])) {
+    for (const id of ALL_CHECK_IDS) checksEnabled[id] = base.checksEnabled[id];
+  }
   return {
     readyThreshold: ready,
     almostThreshold: almost,
@@ -176,9 +182,13 @@ export function normalizeSettings(
 /**
  * Sanitize the Improve section list (Wave 2): trim, drop empties and
  * over-long names, dedupe case-insensitively, cap at 6 — and guarantee
- * exactly one heading matching "Acceptance criteria", because the
- * rubric reads that section in applied descriptions. A list with no
- * such heading gets the canonical one inserted before the last entry.
+ * exactly one Acceptance-criteria heading the rubric can actually read.
+ * The rubric's detector is anchored (the heading must START with
+ * "Acceptance criteria"), so a heading that merely contains the phrase
+ * ("Team acceptance criteria") is dropped here rather than producing a
+ * section the rubric would never credit (cross-review A3/B2); duplicate
+ * AC headings collapse to the first (A4); the cap is applied after any
+ * insertion so the result never exceeds 6.
  */
 export function normalizeImproveSections(
   input: string[] | undefined,
@@ -187,20 +197,30 @@ export function normalizeImproveSections(
   const source = Array.isArray(input) && input.length > 0 ? input : base;
   const seen = new Set<string>();
   const sections: string[] = [];
+  let acSeen = false;
   for (const raw of source) {
     if (typeof raw !== 'string') continue;
     const name = raw.trim().replace(/^#+\s*/, '');
     if (name.length === 0 || name.length > 60) continue;
+    const isAcHeading = /^acceptance criteria\b/i.test(name);
+    if (/acceptance criteria/i.test(name) && !isAcHeading) continue;
+    if (isAcHeading) {
+      if (acSeen) continue;
+      acSeen = true;
+    }
     const key = name.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
     sections.push(name);
-    if (sections.length === 6) break;
   }
   if (sections.length === 0) return [...base];
-  const acIndex = sections.findIndex((name) => /acceptance criteria/i.test(name));
-  if (acIndex === -1) {
+  if (!acSeen) {
     sections.splice(Math.max(0, sections.length - 1), 0, ACCEPTANCE_CRITERIA_HEADING);
+  }
+  while (sections.length > 6) {
+    const acIndex = sections.findIndex((name) => /^acceptance criteria\b/i.test(name));
+    const lastIndex = sections.length - 1;
+    sections.splice(lastIndex === acIndex ? lastIndex - 1 : lastIndex, 1);
   }
   return sections;
 }
@@ -247,6 +267,15 @@ export class ScoreStore {
       ];
       record.history =
         previous.score === record.score ? history : [...history, entry].slice(-10);
+      // Became-Ready bookkeeping (cross-review A7): a transition into
+      // Ready on a score change stamps lastBecameReadyAt; otherwise the
+      // previous stamp carries forward (first-seen Ready is not a
+      // transition and never stamps).
+      if (previous.grade !== 'ready' && record.grade === 'ready' && previous.score !== record.score) {
+        record.lastBecameReadyAt = record.computedAt;
+      } else if (previous.lastBecameReadyAt) {
+        record.lastBecameReadyAt = previous.lastBecameReadyAt;
+      }
     }
     await this.kv.set(scoreKey(record.issueKey), record);
     await this.kv.set(memberKey(record.projectKey, record.issueKey), 1);

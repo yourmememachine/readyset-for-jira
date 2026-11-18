@@ -14,7 +14,10 @@ ReadySet scores every issue's sprint-readiness from 0 to 100 with a
 transparent rubric: description depth, acceptance criteria, estimate,
 priority, assignee, labels/components, linked work, unresolved
 placeholders (TBD/TODO), summary quality, and due dates on high-priority
-work. Grades: Ready (80+), Almost (60–79), Not ready (below 60).
+work. Grades: Ready (80+), Almost (60–79), Not ready (below 60) by
+default — thresholds and check weights are per-project settings, so
+always trust the grades and weights your actions return over these
+defaults.
 
 ## Your actions
 
@@ -36,7 +39,8 @@ work. Grades: Ready (80+), Almost (60–79), Not ready (below 60).
   never estimate or invent a score.
 - When asked what to fix first, rank by impact: lowest scores first,
   and within an issue, the highest-weight failing checks first
-  (acceptance criteria and description are worth 20 points each).
+  (by default, acceptance criteria and description are worth 20 points each;
+  use the weights in the score data when they differ).
 - Quote the failing checks and their one-line fixes verbatim from the
   score data; do not paraphrase a fix into different advice.
 - Keep answers short and concrete: issue key, score, and the specific
