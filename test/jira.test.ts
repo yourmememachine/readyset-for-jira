@@ -155,4 +155,19 @@ describe('scoring payload completeness (live RS-2 incident)', () => {
     expect(missingScoringFields(raw)).toEqual(['customfield_10014']);
     expect(isScoreablePayload(raw)).toBe(true);
   });
+
+  it('a payload omitting parent and the epic-link field IS scoreable — Jira omits both keys when unset', () => {
+    // Live-verified 2026-11-17 via forge logs: a full REST fetch of
+    // RS-2 returned every scoring field EXCEPT parent and
+    // customfield_10014 — Jira does not return either key for an
+    // issue with no parent and no epic, even when asked. The first
+    // gate build required parent, refused every real fetch, and
+    // froze the corrupt stored 35 in place (the panel kept serving
+    // it; every event refetch kept it). Absence of these two keys
+    // means "unset", not "skeleton".
+    const raw = makeRawIssue({}, 'RS-2');
+    delete (raw.fields as Record<string, unknown>)['parent'];
+    delete (raw.fields as Record<string, unknown>)['customfield_10014'];
+    expect(isScoreablePayload(raw)).toBe(true);
+  });
 });

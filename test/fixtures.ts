@@ -90,10 +90,14 @@ export function makeRawIssue(overrides: Partial<RawJiraIssue['fields']> = {}, ke
       parent: null,
       duedate: null,
       timeestimate: null,
-      // Both estimate fields and the epic link are in the adapter's
-      // request list, so real REST/search payloads always carry the
-      // keys (null when unset) — the fixture mirrors that, which the
-      // payload-completeness contract (lib/jira.ts) relies on.
+      // Both estimate fields are in the adapter's request list.
+      // Most requested fields come back present (null when unset),
+      // but NOT all: Jira omits `parent` and the legacy epic-link
+      // field entirely for issues that have neither — the gate in
+      // lib/jira.ts encodes exactly that (GATE_EXEMPT_FIELD_KEYS),
+      // and the incident tests cover payloads with those keys
+      // deleted. This fixture carries them (null) as the other
+      // real shape.
       timeoriginalestimate: null,
       status: { name: 'To Do', statusCategory: { key: 'new' } },
       project: { key: 'RS' },

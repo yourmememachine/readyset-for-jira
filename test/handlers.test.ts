@@ -239,6 +239,48 @@ describe('getIssuePanel', () => {
     await expect(getIssuePanel(deps, { issueKey: 'RS-2' })).rejects.toThrow(/incomplete/i);
     expect(await store.getScore('RS-2')).toBeUndefined();
   });
+
+  it('live RS-2 incident, second act: a stored corrupt 35 heals from a full payload that omits parent/epic-link keys', async () => {
+    // After the first fix deployed, RS-2 STILL showed 35: the gate
+    // required `parent`, which Jira omits when unset, so the real
+    // full payload was refused everywhere and the corrupt record
+    // could never heal (forge logs: "missing: parent,
+    // customfield_10014" on every fetch). This is that exact
+    // payload shape — complete except the two keys Jira does not
+    // return for an issue with no parent and no epic.
+    const full = makeRawIssue({ updated: '2026-11-17T21:35:00.000Z' }, 'RS-2');
+    delete (full.fields as Record<string, unknown>)['parent'];
+    delete (full.fields as Record<string, unknown>)['customfield_10014'];
+    const { deps, store } = makeDepsWithJira(new FakeJiraAdapter([full]));
+    const settings = await store.getSettings('RS');
+    // Plant the corrupt record the incident minted: the sparse
+    // skeleton's shape scores exactly 35.
+    const sparseRaw: RawJiraIssue = {
+      key: 'RS-2',
+      fields: {
+        summary: 'Add rate limiting to the public API gateway endpoints',
+        priority: { name: 'Medium' },
+        status: { name: 'To Do', statusCategory: { key: 'new' } },
+        project: { key: 'RS' },
+        updated: '2026-11-17T20:21:00.000Z',
+        customfield_10016: 3,
+      },
+    };
+    const corrupt = await scoreAndStore(
+      deps,
+      normalizeIssue(sparseRaw),
+      settings,
+      DEFAULT_FIELD_MAP,
+      'event',
+    );
+    expect(corrupt.score).toBe(35);
+
+    const panel = await getIssuePanel(deps, { issueKey: 'RS-2' });
+    expect(panel.score).toBe(100);
+    expect(panel.fromCache).toBe(false);
+    expect((await store.getScore('RS-2'))?.score).toBe(100);
+    expect((await store.getScore('RS-2'))?.source).toBe('rest');
+  });
 });
 
 describe('getProjectDashboard', () => {

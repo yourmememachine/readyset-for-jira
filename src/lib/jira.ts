@@ -166,6 +166,25 @@ export const SCORING_FIELD_KEYS = [
 ] as const;
 
 /**
+ * Scoring keys the completeness gate below does NOT require, even
+ * though scoring reads them: Jira OMITS `parent` from an issue
+ * payload entirely when the issue has no parent — in REST/search
+ * responses (even when the field is explicitly requested) and in
+ * event payloads alike. Absence is therefore authoritative "no
+ * parent", never evidence of a skeleton, and `normalizeIssue`
+ * already reads it as `fields.parent?.key ?? null`.
+ *
+ * Live-verified 2026-11-17 via `forge logs`: the first gate build
+ * required `parent`, so every real fetch of RS-2 was refused
+ * ("missing: parent, customfield_10014") and the corrupt stored 35
+ * could never heal — the panel kept serving it and every event
+ * refetch kept it. A gate must never require a key Jira does not
+ * return. (The legacy epic-link field is likewise omitted when
+ * unset, but custom fields never gate — see below.)
+ */
+export const GATE_EXEMPT_FIELD_KEYS: ReadonlySet<string> = new Set(['parent']);
+
+/**
  * The scoring fields ABSENT from a raw payload, under the site's
  * field map (the mapped story-points / epic-link / acceptance-
  * criteria ids are reported too). Diagnostic: this is the full list
@@ -209,10 +228,19 @@ export function missingScoringFields(
  * 2026-11-17 (the RS-2 incident — see events.ts). A payload that
  * fails this gate must be re-fetched in full before scoring, never
  * scored as-is.
+ *
+ * One exception, learned live the same night: `parent` is exempt
+ * (GATE_EXEMPT_FIELD_KEYS) because Jira omits it when unset, so
+ * its absence proves nothing. Every other standard field IS
+ * returned when asked, so its absence still proves a skeleton —
+ * and a sparse skeleton omits many of them at once, never just
+ * `parent`.
  */
 export function isScoreablePayload(raw: RawJiraIssue): boolean {
   const fields = (raw?.fields ?? {}) as Record<string, unknown>;
-  return SCORING_FIELD_KEYS.every((key) => fields[key] !== undefined);
+  return SCORING_FIELD_KEYS.every(
+    (key) => GATE_EXEMPT_FIELD_KEYS.has(key) || fields[key] !== undefined,
+  );
 }
 
 /** The refusal every scoring entry point throws on partial data. */
