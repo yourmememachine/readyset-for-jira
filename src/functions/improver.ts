@@ -401,6 +401,32 @@ export async function applyImprovement(
     await deps.jira.updateDescription(payload.issueKey, buildAdfFromSections(draft.sections));
   }
 
+  // Improve & Assign (Wave 3): best-effort, but BEFORE the rescore —
+  // assigning first lets the reported score and the audit comment
+  // include the assignee check's points (live verification showed a
+  // "65 → 65" comment on an issue the assignment had actually lifted
+  // to 75). A failure is still only reported, never thrown over a
+  // landed write.
+  let assigned: boolean | undefined;
+  let assignError: string | undefined;
+  if (payload.assignToMe) {
+    if (!payload.accountId) {
+      // No invocation context to take the user from (e.g. a bulk or
+      // scheduled call): report it, never guess an assignee.
+      assigned = false;
+      assignError = 'ReadySet could not resolve the current user from the request context.';
+    } else {
+      try {
+        await (deps.jiraUser ?? deps.jira).assignToUser(payload.issueKey, payload.accountId);
+        assigned = true;
+      } catch (err) {
+        assigned = false;
+        assignError = err instanceof Error ? err.message : String(err);
+        console.error('ReadySet: assign-after-apply failed:', err);
+      }
+    }
+  }
+
   // Rescore from the re-read issue so the reported jump — and the
   // stored score the dashboard and Coach read — is the real one. A
   // partial re-read throws here (after the write, before any store):
@@ -433,29 +459,6 @@ export async function applyImprovement(
   await deps.jira.addComment(payload.issueKey, comment);
   if (settings.analyticsEnabled) {
     await deps.store.incrementAnalytics(issue.projectKey, 'applies', deps.now ? deps.now() : new Date());
-  }
-
-  // Improve & Assign (Wave 3): best-effort and after the fact — the
-  // improvement already landed, so an assignment failure is reported
-  // in the result, never thrown over a successful Apply.
-  let assigned: boolean | undefined;
-  let assignError: string | undefined;
-  if (payload.assignToMe) {
-    if (!payload.accountId) {
-      // No invocation context to take the user from (e.g. a bulk or
-      // scheduled call): report it, never guess an assignee.
-      assigned = false;
-      assignError = 'ReadySet could not resolve the current user from the request context.';
-    } else {
-      try {
-        await (deps.jiraUser ?? deps.jira).assignToUser(payload.issueKey, payload.accountId);
-        assigned = true;
-      } catch (err) {
-        assigned = false;
-        assignError = err instanceof Error ? err.message : String(err);
-        console.error('ReadySet: assign-after-apply failed:', err);
-      }
-    }
   }
 
   return {

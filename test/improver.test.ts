@@ -543,6 +543,9 @@ describe('Improve & Assign (Wave 3)', () => {
     });
     expect(applied.assigned).toBe(true);
     expect(jira.assignToUserCalls).toEqual([{ issueKey: 'RS-3', accountId: 'fake-current-user' }]);
+    // Assignment happens before the rescore, so the reported score
+    // includes the assignee check's 10 points (60 draft-only → 70).
+    expect(applied.newScore).toBe(70);
   });
 
   it('an assignment failure is reported, never thrown over a successful apply', async () => {
