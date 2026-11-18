@@ -15,7 +15,16 @@ export class ForgeKV implements KeyValueStore {
     return kvs.get<T>(key);
   }
 
-  async set(key: string, value: unknown): Promise<void> {
+  async set(key: string, value: unknown, options?: { ttlSeconds?: number }): Promise<void> {
+    // TTL plumbing (war-room round 2, D11/E12): @forge/kvs supports a
+    // per-write TTL; only cache-class values (drafts, daily counters,
+    // quotas) pass one — durable state never expires.
+    if (options?.ttlSeconds !== undefined) {
+      await kvs.set(key, value, {
+        ttl: { value: options.ttlSeconds, unit: 'SECONDS' as const },
+      });
+      return;
+    }
     await kvs.set(key, value);
   }
 

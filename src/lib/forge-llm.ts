@@ -34,12 +34,19 @@ const MAX_COMPLETION_TOKENS = 600;
  * it, taking the template fallback down too. Racing the call against
  * this timeout turns a hang into an ordinary LLM failure, which the
  * improver already falls back from.
+ *
+ * Round 2 (D10): the ceiling is 15 s, not 20 — the race winner still
+ * has to parse, fall back, cache and render inside the same 25 s
+ * budget, and a 20 s timeout left under 5 s for all of it. The timer
+ * is also cleared when the call wins: the round-1 race leaked a live
+ * 20 s timer per successful call.
  */
-const LLM_TIMEOUT_MS = 20_000;
+const LLM_TIMEOUT_MS = 15_000;
 
 export class ForgeLlmClient implements LlmClient {
   async draftDescription(request: DraftRequest): Promise<string> {
     const prompt = buildDraftPrompt(request);
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const response = await Promise.race([
       chat({
         model: IMPROVER_MODEL,
@@ -50,12 +57,14 @@ export class ForgeLlmClient implements LlmClient {
         max_completion_tokens: MAX_COMPLETION_TOKENS,
       }),
       new Promise<never>((_resolve, reject) => {
-        setTimeout(
+        timer = setTimeout(
           () => reject(new Error(`ReadySet: Forge LLM call timed out after ${LLM_TIMEOUT_MS} ms`)),
           LLM_TIMEOUT_MS,
         );
       }),
-    ]);
+    ]).finally(() => {
+      if (timer) clearTimeout(timer);
+    });
     const content = response.choices[0]?.message.content;
     const text =
       typeof content === 'string'

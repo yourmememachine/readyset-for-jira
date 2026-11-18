@@ -56,6 +56,10 @@ export interface JiraFieldInfo {
   id: string;
   name: string;
   custom: boolean;
+  /** `schema.type` from the field list, when the adapter carries it (round 2, F-7). */
+  schemaType?: string;
+  /** `schema.custom` (the field-type plugin key), when carried. */
+  schemaCustom?: string;
 }
 
 /**
@@ -124,30 +128,90 @@ export interface JiraAdapter {
  * ids for anything the site doesn't expose under a known name, so a
  * site that hides its field list degrades to the previous behaviour
  * instead of breaking.
+ *
+ * Duplicate names are decided by a precedence ladder, never by list
+ * order (war-room round 2, F-7 \u2014 both first-wins and last-wins were
+ * coin flips): (1) the slot's compiled default id, Atlassian's managed
+ * field; (2) schema-type compatibility; (3) custom fields over system
+ * fields; (4) the lowest numeric customfield id (ids allocate
+ * monotonically, so the oldest field is the one teams populate; a
+ * later admin duplicate is the higher id). Every discarded duplicate
+ * is named in a warning so a wrong pick is diagnosable.
  */
 export function resolveFieldMap(fields: JiraFieldInfo[]): JiraFieldMap {
-  // First occurrence wins on duplicate names (war-room B10): a Map
-  // built straight from the list silently let a later duplicate-named
-  // field (an admin-created second "Story Points") overwrite the real
-  // one, permanently mis-scoring the site.
-  const byName = new Map<string, string>();
+  const byName = new Map<string, JiraFieldInfo[]>();
   for (const field of fields) {
     const name = field.name.trim().toLowerCase();
-    if (!byName.has(name)) byName.set(name, field.id);
+    const list = byName.get(name) ?? [];
+    list.push(field);
+    byName.set(name, list);
   }
-  const pick = (names: string[], fallback: string | null): string | null => {
+  const numericId = (id: string): number => {
+    const match = /(\d+)$/.exec(id);
+    return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
+  };
+  const pick = (
+    names: string[],
+    fallback: string | null,
+    defaultId: string | null,
+    schemaOk: (field: JiraFieldInfo) => boolean,
+  ): string | null => {
+    const candidates: JiraFieldInfo[] = [];
     for (const name of names) {
-      const id = byName.get(name);
-      if (id) return id;
+      candidates.push(...(byName.get(name) ?? []));
     }
-    return fallback;
+    if (candidates.length === 0) return fallback;
+    let pool = candidates;
+    const ladder: Array<(field: JiraFieldInfo) => boolean> = [
+      (field) => defaultId !== null && field.id === defaultId,
+      schemaOk,
+      (field) => field.custom,
+    ];
+    for (const rung of ladder) {
+      const survivors = pool.filter(rung);
+      if (survivors.length > 0) pool = survivors;
+      if (pool.length === 1) break;
+    }
+    pool.sort((a, b) => numericId(a.id) - numericId(b.id));
+    const winner = pool[0];
+    if (!winner) return fallback;
+    if (candidates.length > 1) {
+      const discarded = candidates.filter((field) => field.id !== winner.id);
+      console.warn(
+        `ReadySet: duplicate fields named "${names[0]}" \u2014 using ${winner.id}, ignoring ${discarded
+          .map((field) => field.id)
+          .join(', ')}`,
+      );
+    }
+    return winner.id;
   };
   return {
     storyPoints:
-      pick(['story points', 'story point estimate'], DEFAULT_FIELD_MAP.storyPoints) ??
-      DEFAULT_FIELD_MAP.storyPoints,
-    epicLink: pick(['epic link'], DEFAULT_FIELD_MAP.epicLink) ?? DEFAULT_FIELD_MAP.epicLink,
-    acceptanceCriteria: pick(['acceptance criteria'], DEFAULT_FIELD_MAP.acceptanceCriteria),
+      pick(
+        ['story points', 'story point estimate'],
+        DEFAULT_FIELD_MAP.storyPoints,
+        DEFAULT_FIELD_MAP.storyPoints,
+        (field) => field.schemaType === undefined || field.schemaType === 'number',
+      ) ?? DEFAULT_FIELD_MAP.storyPoints,
+    epicLink:
+      pick(
+        ['epic link'],
+        DEFAULT_FIELD_MAP.epicLink,
+        DEFAULT_FIELD_MAP.epicLink,
+        (field) =>
+          field.schemaCustom === undefined ||
+          field.schemaCustom.includes('gh-epic-link') ||
+          field.schemaType === 'string',
+      ) ?? DEFAULT_FIELD_MAP.epicLink,
+    acceptanceCriteria: pick(
+      ['acceptance criteria'],
+      DEFAULT_FIELD_MAP.acceptanceCriteria,
+      null,
+      (field) =>
+        field.schemaType === undefined ||
+        field.schemaType === 'string' ||
+        field.schemaType === 'any',
+    ),
   };
 }
 
@@ -351,10 +415,52 @@ export function normalizeIssue(
  * never *sees* them, so reconciliation deleted their records nightly
  * and the `include` policy could never survive a scan.
  */
+/** Jira Cloud project-key shape: an uppercase letter, then uppercase/digits/underscore. */
+export const PROJECT_KEY_RE = /^[A-Z][A-Z0-9_]*$/;
+
+export function isValidProjectKey(projectKey: unknown): projectKey is string {
+  return typeof projectKey === 'string' && PROJECT_KEY_RE.test(projectKey);
+}
+
 export function projectScanJql(projectKey: string, includeDone = false): string {
+  // Validation at the sink (war-room round 2, F-16): every caller is
+  // checked today, but a legacy roster entry planted before validation
+  // existed would otherwise be interpolated into JQL forever.
+  if (!isValidProjectKey(projectKey)) {
+    throw new Error(`ReadySet: invalid project key "${String(projectKey)}"`);
+  }
   return includeDone
     ? `project = "${projectKey}" ORDER BY key ASC`
     : `project = "${projectKey}" AND statusCategory != Done ORDER BY key ASC`;
+}
+
+/**
+ * The set of issue keys in a project that the given (user) adapter can
+ * see, via paginated search — the visibility boundary for serving
+ * stored scores (war-room round 2, E #1/#2 + D2/D3): KVS records carry
+ * no Jira permissions, so any read surface serving them to a user must
+ * intersect with what that user can browse. Bounded at `maxPages`
+ * pages; callers fail closed when the search itself fails.
+ */
+export async function getVisibleIssueKeys(
+  adapter: JiraAdapter,
+  projectKey: string,
+  maxPages = 10,
+  pageSize = 100,
+): Promise<Set<string>> {
+  const keys = new Set<string>();
+  let token: string | null = null;
+  for (let page = 0; page < maxPages; page += 1) {
+    const result = await adapter.searchIssues(
+      `project = "${projectKey}" ORDER BY key ASC`,
+      token,
+      pageSize,
+    );
+    for (const issue of result.issues) keys.add(issue.key);
+    if (result.isLast || !result.nextPageToken) return keys;
+    token = result.nextPageToken;
+  }
+  return keys;
 }
 
 const FAKE_TOKEN_PREFIX = 'pg:';
@@ -376,8 +482,14 @@ function decodeFakeToken(token: string | null): number {
 }
 
 const DEFAULT_FAKE_FIELDS: JiraFieldInfo[] = [
-  { id: 'customfield_10016', name: 'Story Points', custom: true },
-  { id: 'customfield_10014', name: 'Epic Link', custom: true },
+  { id: 'customfield_10016', name: 'Story Points', custom: true, schemaType: 'number' },
+  {
+    id: 'customfield_10014',
+    name: 'Epic Link',
+    custom: true,
+    schemaType: 'string',
+    schemaCustom: 'com.pyxis.greenhopper.jira:gh-epic-link',
+  },
   { id: 'summary', name: 'Summary', custom: false },
   { id: 'description', name: 'Description', custom: false },
 ];
@@ -407,6 +519,11 @@ export class FakeJiraAdapter implements JiraAdapter {
   adminProjects: ReadonlySet<string> | null = null;
   /** Projects the "current user" may edit issues in; null = all. */
   editProjects: ReadonlySet<string> | null = null;
+  /** Projects the "current user" may browse; null = all (round 2). */
+  browseProjects: ReadonlySet<string> | null = null;
+  /** Issue keys invisible to the "current user" (issue-level security,
+   *  round 2): getIssue throws for them and search omits them. */
+  hiddenIssues: ReadonlySet<string> = new Set();
 
   constructor(
     private readonly issues: RawJiraIssue[],
@@ -416,7 +533,9 @@ export class FakeJiraAdapter implements JiraAdapter {
   async getIssue(issueKey: string): Promise<RawJiraIssue> {
     this.getIssueCalls.push(issueKey);
     const issue = this.issues.find((candidate) => candidate.key === issueKey);
-    if (!issue) throw new Error(`FakeJiraAdapter: unknown issue ${issueKey}`);
+    if (!issue || this.hiddenIssues.has(issueKey)) {
+      throw new Error(`FakeJiraAdapter: unknown issue ${issueKey}`);
+    }
     return structuredClone(issue);
   }
 
@@ -428,7 +547,7 @@ export class FakeJiraAdapter implements JiraAdapter {
     this.searchCalls.push({ jql, pageToken, maxResults });
     const startAt = decodeFakeToken(pageToken);
     const projectMatch = jql.match(/project\s*=\s*"([^"]+)"/);
-    let pool = this.issues;
+    let pool = this.issues.filter((issue) => !this.hiddenIssues.has(issue.key));
     if (projectMatch) {
       pool = pool.filter((issue) => issue.fields.project?.key === projectMatch[1]);
     }
@@ -454,6 +573,9 @@ export class FakeJiraAdapter implements JiraAdapter {
   async hasProjectPermission(projectKey: string, permission?: string): Promise<boolean> {
     if (permission === 'EDIT_ISSUES') {
       return this.editProjects === null || this.editProjects.has(projectKey);
+    }
+    if (permission === 'BROWSE_PROJECTS') {
+      return this.browseProjects === null || this.browseProjects.has(projectKey);
     }
     return this.adminProjects === null || this.adminProjects.has(projectKey);
   }

@@ -42,6 +42,7 @@ import {
 import type { ScoreSource } from '../lib/types';
 import {
   getEffectiveFieldMap,
+  clearExcludedProperty,
   scoreAndStore,
   settingsFingerprint,
   syncScoreProperty,
@@ -121,8 +122,13 @@ export async function handleIssueEvent(
     // Deleted issues must leave the dashboard immediately; the
     // reconciling nightly scan is the backstop, not the mechanism
     // (cross-review B9 — the manifest now subscribes to this event).
+    // Round 2: the entity property and any cached drafts go too
+    // (E #12) — a deleted issue's drafts were previously unreachable
+    // garbage that never expired.
     if (!issueKey) return { handled: false };
     await deps.store.deleteScore(issueKey);
+    await clearExcludedProperty(deps, issueKey);
+    await deps.store.deleteIssueDrafts(issueKey);
     return { handled: true, issueKey };
   }
 
@@ -130,11 +136,33 @@ export async function handleIssueEvent(
     return { handled: false };
   }
 
+  // Known-project gate (war-room round 2, D9): the trigger fires for
+  // every issue event on the SITE, but ReadySet only tracks projects
+  // it has been used on (the roster). An event for any other project
+  // is ignored before it can trigger a refetch or a KVS write. The
+  // project key comes from the payload, falling back to the issue
+  // key's prefix.
+  const eventProjectKey =
+    event.issue?.fields?.project?.key ?? issueKey.split('-')[0] ?? '';
+  const knownProjects = await deps.store.getKnownProjects();
+  if (!knownProjects.includes(eventProjectKey)) {
+    return { handled: false };
+  }
+
   const resolution = resolveEventIssue(event);
   if (resolution.kind === 'invalid') {
     return { handled: false };
   }
-  const fieldMap = await getEffectiveFieldMap(deps);
+  const { fieldMap, degraded } = await getEffectiveFieldMap(deps);
+  if (degraded) {
+    // Persistence path (round 2, F-4): field resolution failed with
+    // no cached map — keep the stored score rather than rescore on
+    // never-resolved defaults.
+    console.error(
+      `ReadySet: event for ${issueKey} skipped; field resolution degraded, keeping the stored score`,
+    );
+    return { handled: false };
+  }
 
   let raw: RawJiraIssue;
   let source: ScoreSource;
@@ -189,10 +217,15 @@ export async function handleIssueEvent(
       // The record is fresh but its entity property never landed
       // (war-room A1): the early-exit must not freeze the JQL mirror
       // in its failed state — retry the write on this event, which
-      // already paid for the payload.
+      // already paid for the payload. The flip is conditional
+      // (round 2, F-13).
       const synced = await syncScoreProperty(deps, cached, settings, cached);
       if (synced) {
-        await deps.store.saveScore({ ...cached, propertySynced: true });
+        await deps.store.markPropertySynced(cached.issueKey, {
+          score: cached.score,
+          grade: cached.grade,
+          computedAt: cached.computedAt,
+        });
       }
     }
     return { handled: true, issueKey: issue.key };

@@ -82,6 +82,11 @@ modules:
         - avi:jira:updated:issue
         # Deleted issues must leave the dashboard promptly (B9).
         - avi:jira:deleted:issue
+      # Round 2 (D9): ignore events this app itself causes — Apply's
+      # own writes no longer re-trigger the handler (the handler also
+      # gates on the known-project roster, defence in depth).
+      filter:
+        ignoreSelf: true
   scheduledTrigger:
     - key: readyset-nightly-rescan
       function: scheduled-handler
@@ -93,6 +98,13 @@ modules:
       handler: index.eventHandler
     - key: scheduled-handler
       handler: index.scheduledHandler
+      # Round 2 (D1): the nightly rescan loops scanProject to
+      # completion and was written against a 900 s budget — but
+      # timeoutSeconds was never declared, so Forge applied the 55 s
+      # default and long scans died mid-project. (Only the scheduled
+      # function may carry 900: resolvers and event handlers are
+      # 25 s-class invocations.)
+      timeoutSeconds: 900
     - key: action-issue-readiness
       handler: index.fetchIssueReadinessAction
     - key: action-project-ready
@@ -126,7 +138,7 @@ modules:
       description: >-
         Returns the ReadySet readiness summary for one Jira project: average
         score, share of Ready issues, grade counts, scan status, and the five
-        lowest-scoring open issues.
+        lowest-scoring issues.
       actionVerb: GET
       function: action-project-ready
       inputs:
@@ -203,10 +215,9 @@ modules:
         transparent rubric: description depth, acceptance criteria, estimate,
         priority, assignee, labels/components, linked work, unresolved
         placeholders (TBD/TODO), summary quality, and due dates on high-priority
-        work. Grades: Ready (80+), Almost (60-79), Not ready (below 60) by
-        default — thresholds and check weights are per-project settings, so
-        always trust the grades and weights your actions return over these
-        defaults.
+        work. Grades are Ready, Almost, and Not ready (default thresholds
+        80/60, per-project configurable — never infer a grade from a score;
+        always use the grade each action returns).
 
         Your actions: - fetch-issue-readiness - one issue's score and its
         per-check explanation. Use it for "How ready is ABC-123?" and "Why isn't

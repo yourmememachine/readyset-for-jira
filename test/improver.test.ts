@@ -702,15 +702,21 @@ describe('war-room fixes (2026-11-18)', () => {
     throw new Error('LLM unavailable');
   });
 
-  it('F9/C3: a bare Bug gets a reproduction-steps section built from its own text and can reach 60', async () => {
+  it('F9/C3 (round 2, F-3): a bare Bug gets an honest repro scaffold — no fabricated credit — and projects to 55', async () => {
     const bug = makeRawMessyIssue('RS-7');
     bug.fields.issuetype = { name: 'Bug' };
     const { deps } = makeImproverDeps([bug], throwingLlm);
     const payload = await improveIssue(deps, { issueKey: 'RS-7' });
     expect(payload.source).toBe('template');
     expect(payload.currentScore).toBe(18);
-    expect(payload.sections.map((section) => section.heading)).toContain('Steps to reproduce');
-    expect(payload.projectedScore).toBeGreaterThanOrEqual(60);
+    const repro = payload.sections.find((section) => section.heading === 'Steps to reproduce');
+    expect(repro).toBeDefined();
+    // The scaffold confesses the gap instead of manufacturing steps:
+    // its lines are exactly what the rubric's evidence test strips,
+    // so the repro weight is NOT paid and the projection is 55, not
+    // the round-1 fabricated 64.
+    expect(repro?.paragraphs.join(' ')).toMatch(/not documented in the issue/i);
+    expect(payload.projectedScore).toBe(55);
   });
 
   it('F11: an LLM draft containing a placeholder is rejected and the template takes over', async () => {
@@ -770,7 +776,10 @@ describe('war-room fixes (2026-11-18)', () => {
       private reads = 0;
       override async getIssue(issueKey: string) {
         this.reads += 1;
-        if (this.reads >= 3) throw new Error('read-back failed');
+        // Reads: 1 = Improve preview, 2 = Apply's first read, 3 =
+        // Apply's pre-write re-read (round 2, E7), 4 = the post-write
+        // confirmation read — the one this fake kills.
+        if (this.reads >= 4) throw new Error('read-back failed');
         return super.getIssue(issueKey);
       }
     }

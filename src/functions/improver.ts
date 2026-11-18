@@ -148,8 +148,28 @@ export function improvementContentHash(
  * start with the criteria; taking sections[0] merged the wrong text
  * into live descriptions (cross-review A1/B2).
  */
+/**
+ * Heading comparison normalizer (war-room round 2, F-5): numbering,
+ * bold markers and a trailing colon are presentation, not identity —
+ * the same canonicalization parseDraftMarkdown applies to the
+ * headings it stores, applied here to both sides of the comparison
+ * so parser, rubric and this selector agree on what a heading IS.
+ */
+export function normalizeHeadingForMatch(heading: string): string {
+  return heading
+    .trim()
+    .replace(/^#+\s*/, '')
+    .replace(/^\d+[.)]\s*/, '')
+    .replace(/\*\*|__/g, '')
+    .replace(/\s+/g, ' ')
+    .replace(/:\s*$/, '')
+    .toLowerCase();
+}
+
 export function selectAcSection(sections: DraftSection[]): DraftSection | undefined {
-  return sections.find((section) => /^acceptance criteria\b/i.test(section.heading.trim()));
+  return sections.find((section) =>
+    /^acceptance criteria\b/.test(normalizeHeadingForMatch(section.heading)),
+  );
 }
 
 export function summaryContentHash(issue: NormalizedIssue): string {
@@ -164,6 +184,9 @@ export function summaryContentHash(issue: NormalizedIssue): string {
 }
 
 const EDIT_ISSUES_PERMISSION = 'EDIT_ISSUES';
+
+/** Max billed LLM draft calls per issue per day (round 2, E #12). */
+export const LLM_DAILY_QUOTA_PER_ISSUE = 20;
 
 /**
  * Whether the current user may edit issues in the project (Wave 2
@@ -198,7 +221,15 @@ async function rescoreAfterWrite(
   after: NormalizedIssue,
   settings: ProjectSettings,
   fieldMap: JiraFieldMap,
+  fieldMapDegraded = false,
 ): Promise<{ score: number; checks: CheckResult[] }> {
+  if (fieldMapDegraded) {
+    // Never persist a score computed on a never-resolved field map
+    // (round 2, F-4): throwing here lands in the caller's post-write
+    // warning channel — the write landed, the rescore is deferred to
+    // the next event/scan.
+    throw new Error('ReadySet: field map degraded; post-write rescore deferred');
+  }
   const record = await scoreAndStore(deps, after, settings, fieldMap, 'rest');
   if (record) return record;
   const scored = scoreIssue(after, settings);
@@ -252,6 +283,22 @@ export async function draftForIssue(
         ? [templateAcSection(issue, failed, settings.improveSections)]
         : buildTemplateDraft(issue, failed, settings.improveSections);
     source = 'template';
+  } else if (
+    (await deps.store.incrementLlmQuota(issue.key, deps.now ? deps.now() : new Date())) >
+    LLM_DAILY_QUOTA_PER_ISSUE
+  ) {
+    // Daily LLM quota (round 2, E #12): drafting is open to any
+    // viewer and every distinct content hash is a billed call, so
+    // beyond the per-issue daily cap Improve serves the template —
+    // the feature degrades, the cost does not grow.
+    console.error(
+      `ReadySet: LLM daily quota reached for ${issue.key}; using template fallback`,
+    );
+    sections =
+      mode === 'ac-only'
+        ? [templateAcSection(issue, failed, settings.improveSections)]
+        : buildTemplateDraft(issue, failed, settings.improveSections);
+    source = 'template';
   } else {
     try {
       const markdown = await deps.llm.draftDescription({
@@ -261,10 +308,17 @@ export async function draftForIssue(
         mode,
       });
       if (mode === 'ac-only') {
-        const parsed = parseDraftMarkdown(markdown, [
-          settings.improveSections.find((name) => /^acceptance criteria\b/i.test(name)) ??
-            'Acceptance criteria',
-        ]);
+        const parsed = parseDraftMarkdown(
+          markdown,
+          [
+            settings.improveSections.find((name) => /^acceptance criteria\b/i.test(name)) ??
+              'Acceptance criteria',
+          ],
+          // The usability floor keys on draft kind (round 2, F-18): a
+          // legitimate one-line AC section is ~35 chars and the
+          // full-draft 40-char floor rejected every one of them.
+          { minChars: 10 },
+        );
         // Select the criteria section by heading, never by position:
         // the parser tolerates preamble and extra sections, and
         // merging sections[0] wrote the wrong text live (A1/B2). No
@@ -319,7 +373,7 @@ export async function improveIssue(
   payload: { issueKey: string; mode?: ImproveMode },
 ): Promise<ImprovePayload> {
   const adapter = deps.jiraUser ?? deps.jira;
-  const fieldMap = await getEffectiveFieldMap(deps);
+  const { fieldMap } = await getEffectiveFieldMap(deps);
   const raw = await adapter.getIssue(payload.issueKey, fieldMap);
   const issue = readCompleteIssue(raw, fieldMap);
   const settings = await deps.store.getSettings(issue.projectKey);
@@ -335,6 +389,13 @@ export async function improveIssue(
   // guarantees an AC-headed section in an ac-only draft, and a draft
   // without one is corrupt, not a cue to project the wrong section).
   const acSection = selectAcSection(draft.sections);
+  if (mode === 'ac-only' && !acSection) {
+    // Mirror Apply's refusal (round 2, F-19): a corrupt ac-only draft
+    // is "no longer available", never silently projected as a full
+    // draft — the preview previously showed full-mode numbers for a
+    // draft Apply would refuse.
+    throw new Error('The draft for this issue is no longer available. Run Improve again.');
+  }
   return {
     issueKey: issue.key,
     canApply: await canUserEditIssues(deps, issue.projectKey),
@@ -363,7 +424,7 @@ export async function applyImprovement(
   payload: { issueKey: string; contentHash: string; assignToMe?: boolean; accountId?: string },
 ): Promise<ApplyPayload> {
   const readAdapter = deps.jiraUser ?? deps.jira;
-  const fieldMap = await getEffectiveFieldMap(deps);
+  const { fieldMap, degraded } = await getEffectiveFieldMap(deps);
   const raw = await readAdapter.getIssue(payload.issueKey, fieldMap);
   const issue = readCompleteIssue(raw, fieldMap);
   const settings = await deps.store.getSettings(issue.projectKey);
@@ -398,6 +459,26 @@ export async function applyImprovement(
     );
   }
 
+  // Re-read immediately before the write (round 2, E7): the gates
+  // above ran against a read taken several round trips ago, and a
+  // concurrent edit landing in between was silently overwritten —
+  // the stale-hash guarantee only held at Apply START. The re-read
+  // re-derives the hash; a mismatch refuses exactly like the first
+  // check. (Residual, documented: Jira REST offers no ETag/CAS, so a
+  // write landing between this read and the PUT is still possible —
+  // the window is now one round trip, not the whole Apply.)
+  const freshRaw = await readAdapter.getIssue(payload.issueKey, fieldMap);
+  const freshIssue = readCompleteIssue(freshRaw, fieldMap);
+  const freshFailed = failedChecksOf(freshIssue, settings);
+  if (
+    improvementContentHash(freshIssue, freshFailed, settings.improveSections, mode) !==
+    payload.contentHash
+  ) {
+    throw new Error(
+      'This issue changed since the draft was generated. Run Improve again to refresh the draft.',
+    );
+  }
+
   // The write itself runs as the app (DESIGN.md §5.1): the app holds
   // write:jira-work, and the comment below is the audit trail. An
   // AC-only draft merges its section into the live description —
@@ -411,7 +492,7 @@ export async function applyImprovement(
     if (!acSection) throw new Error('The draft for this issue is no longer available. Run Improve again.');
     await deps.jira.updateDescription(
       payload.issueKey,
-      mergeAcSectionIntoAdf(raw.fields.description, acSection),
+      mergeAcSectionIntoAdf(freshRaw.fields.description, acSection),
     );
   } else {
     await deps.jira.updateDescription(payload.issueKey, buildAdfFromSections(draft.sections));
@@ -456,7 +537,7 @@ export async function applyImprovement(
   let postWriteWarning: string | undefined;
   try {
     const after = readCompleteIssue(await deps.jira.getIssue(payload.issueKey, fieldMap), fieldMap);
-    record = await rescoreAfterWrite(deps, after, settings, fieldMap);
+    record = await rescoreAfterWrite(deps, after, settings, fieldMap, degraded);
   } catch (err) {
     console.error('ReadySet: post-apply rescore failed; the write itself landed:', err);
     postWriteWarning =
@@ -492,12 +573,23 @@ export async function applyImprovement(
         'The description was updated and rescored, but the audit comment could not be posted.';
     }
   }
-  if (settings.analyticsEnabled) {
-    await deps.store.incrementAnalytics(issue.projectKey, 'applies', deps.now ? deps.now() : new Date());
+  // Post-write bookkeeping is guarded like everything after the
+  // write (round 2, F-2): the analytics increment and the draft
+  // consumption are KVS writes that can fail, and an unguarded throw
+  // here reported a LANDED write as an Apply failure — inviting a
+  // retry the stale-hash check would refuse.
+  try {
+    if (settings.analyticsEnabled) {
+      await deps.store.incrementAnalytics(issue.projectKey, 'applies', deps.now ? deps.now() : new Date());
+    }
+    // The draft is consumed (war-room B22): its hash is stale by
+    // construction now, and leaving it in KVS only orphans it.
+    await deps.store.deleteDraft(payload.issueKey, payload.contentHash);
+  } catch (err) {
+    console.error('ReadySet: post-apply bookkeeping failed; the write itself landed:', err);
+    postWriteWarning ??=
+      'The description was updated and rescored, but a final bookkeeping step failed.';
   }
-  // The draft is consumed (war-room B22): its hash is stale by
-  // construction now, and leaving it in KVS only orphans it.
-  await deps.store.deleteDraft(payload.issueKey, payload.contentHash);
 
   return {
     issueKey: payload.issueKey,
@@ -520,7 +612,7 @@ export async function improveSummary(
   payload: { issueKey: string },
 ): Promise<SummaryImprovePayload> {
   const adapter = deps.jiraUser ?? deps.jira;
-  const fieldMap = await getEffectiveFieldMap(deps);
+  const { fieldMap } = await getEffectiveFieldMap(deps);
   const raw = await adapter.getIssue(payload.issueKey, fieldMap);
   const issue = readCompleteIssue(raw, fieldMap);
   const settings = await deps.store.getSettings(issue.projectKey);
@@ -540,7 +632,17 @@ export async function improveSummary(
   } else {
     let summary: string | null = null;
     let source: DraftSource = 'llm';
-    try {
+    // Same per-issue daily LLM quota as description drafts (E #12).
+    const overQuota =
+      (await deps.store.incrementLlmQuota(issue.key, deps.now ? deps.now() : new Date())) >
+      LLM_DAILY_QUOTA_PER_ISSUE;
+    if (overQuota) {
+      console.error(
+        `ReadySet: LLM daily quota reached for ${issue.key}; using derived summary fallback`,
+      );
+      summary = buildSummaryFromIssue(issue, sectionsFromAdf(raw.fields.description));
+      source = 'template';
+    } else try {
       const reply = await deps.llm.draftDescription({
         issue,
         failedChecks: scored.checks.filter((check) => !check.passed),
@@ -593,7 +695,7 @@ export async function applySummary(
   payload: { issueKey: string; contentHash: string },
 ): Promise<ApplyPayload> {
   const readAdapter = deps.jiraUser ?? deps.jira;
-  const fieldMap = await getEffectiveFieldMap(deps);
+  const { fieldMap, degraded } = await getEffectiveFieldMap(deps);
   const issue = readCompleteIssue(await readAdapter.getIssue(payload.issueKey, fieldMap), fieldMap);
   const settings = await deps.store.getSettings(issue.projectKey);
   const current = scoreIssue(issue, settings);
@@ -616,6 +718,17 @@ export async function applySummary(
       'You do not have permission to edit issues in this project, so the draft cannot be applied.',
     );
   }
+  // Re-read + hash recheck immediately before the write (round 2,
+  // E7), exactly as in applyImprovement.
+  const freshIssue = readCompleteIssue(
+    await readAdapter.getIssue(payload.issueKey, fieldMap),
+    fieldMap,
+  );
+  if (summaryContentHash(freshIssue) !== payload.contentHash) {
+    throw new Error(
+      'This issue changed since the draft was generated. Run Improve again to refresh the draft.',
+    );
+  }
   await deps.jira.updateSummary(payload.issueKey, draft.summary);
   // Post-write confirmation, guarded exactly as in applyImprovement
   // (war-room B1): the summary HAS changed, so a re-read or comment
@@ -624,7 +737,7 @@ export async function applySummary(
   let postWriteWarning: string | undefined;
   try {
     const after = readCompleteIssue(await deps.jira.getIssue(payload.issueKey, fieldMap), fieldMap);
-    record = await rescoreAfterWrite(deps, after, settings, fieldMap);
+    record = await rescoreAfterWrite(deps, after, settings, fieldMap, degraded);
   } catch (err) {
     console.error('ReadySet: post-apply rescore failed; the summary write itself landed:', err);
     postWriteWarning =
@@ -645,10 +758,17 @@ export async function applySummary(
         'The summary was updated and rescored, but the audit comment could not be posted.';
     }
   }
-  if (settings.analyticsEnabled) {
-    await deps.store.incrementAnalytics(issue.projectKey, 'applies', deps.now ? deps.now() : new Date());
+  // Guarded post-write bookkeeping (round 2, F-2), as in Apply.
+  try {
+    if (settings.analyticsEnabled) {
+      await deps.store.incrementAnalytics(issue.projectKey, 'applies', deps.now ? deps.now() : new Date());
+    }
+    await deps.store.deleteSummaryDraft(payload.issueKey, payload.contentHash);
+  } catch (err) {
+    console.error('ReadySet: post-apply bookkeeping failed; the summary write itself landed:', err);
+    postWriteWarning ??=
+      'The summary was updated and rescored, but a final bookkeeping step failed.';
   }
-  await deps.store.deleteSummaryDraft(payload.issueKey, payload.contentHash);
   return {
     issueKey: payload.issueKey,
     previousScore: current.score,

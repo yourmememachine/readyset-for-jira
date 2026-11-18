@@ -115,14 +115,23 @@ export class ForgeJiraAdapter implements JiraAdapter {
     const response = await this.requester().requestJira(route`/rest/api/3/field`, {
       headers: { Accept: 'application/json' },
     });
-    const fields = await readJson<Array<{ id: string; name: string; custom?: boolean }>>(
-      response,
-      'listFields',
-    );
+    const fields = await readJson<
+      Array<{
+        id: string;
+        name: string;
+        custom?: boolean;
+        schema?: { type?: string; custom?: string };
+      }>
+    >(response, 'listFields');
+    // Carry the schema through (war-room round 2, F-7): the duplicate
+    // tiebreak in resolveFieldMap needs the field's type/origin, which
+    // the old mapping discarded.
     return fields.map((field) => ({
       id: field.id,
       name: field.name,
       custom: field.custom ?? false,
+      ...(field.schema?.type ? { schemaType: field.schema.type } : {}),
+      ...(field.schema?.custom ? { schemaCustom: field.schema.custom } : {}),
     }));
   }
 
@@ -224,12 +233,16 @@ export class ForgeJiraAdapter implements JiraAdapter {
     // DELETE the same property (cross-review B4): when an issue becomes
     // excluded, its stored score is deleted — the JQL-indexed property
     // must go too, or JQL and the workflow validators keep enforcing a
-    // grade the app no longer stands behind. 204 on success; a missing
-    // property also returns 204 in Jira, so this is idempotent.
+    // grade the app no longer stands behind. 204 on success. A missing
+    // property (or issue) returns 404, NOT 204 (war-room round 2, D13 —
+    // the old comment here claimed otherwise): treat 404 as success so
+    // the delete is genuinely idempotent and the propdel tombstone
+    // drain can terminate.
     const response = await this.requester().requestJira(
       route`/rest/api/3/issue/${issueKey}/properties/readyset`,
       { method: 'DELETE', headers: { Accept: 'application/json' } },
     );
+    if (response.status === 404) return;
     await assertOk(response, `deleteScoreProperty(${issueKey})`);
   }
 }

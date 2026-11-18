@@ -37,7 +37,6 @@ import {
   continueScanProject,
   getIssuePanel,
   getProjectDashboard,
-  getSettings,
   rescanProject,
   saveSettings,
   type ResolverDeps,
@@ -83,11 +82,6 @@ resolver.define(
   'continueScanProject',
   async (request: { payload: { projectKey: string } }) =>
     continueScanProject(uiDeps, request.payload),
-);
-
-resolver.define(
-  'getSettings',
-  async (request: { payload: { projectKey: string } }) => getSettings(uiDeps, request.payload),
 );
 
 resolver.define(
@@ -139,30 +133,41 @@ export const handler = resolver.getDefinitions();
 
 /**
  * Rovo action entry points (manifest `action` modules → ReadySet
- * Coach). Actions run without a viewing-user context, so they use
- * the app deps; they only ever read stored scores (functions/actions).
+ * Coach). Action invocations DO carry the invoking user's context:
+ * the Forge runtime runs the function with that user's principal
+ * available to `api.asUser()`. Round 2 (D2) binds the actions a
+ * user-mode adapter for exactly that reason — every Coach answer is
+ * visibility-checked as the asker before a stored score is served
+ * (functions/actions). The round-1 comment here claimed there was no
+ * user context; that claim was the Blocker's hiding place.
  */
+const actionDeps: ResolverDeps = {
+  jira: new ForgeJiraAdapter('app'),
+  jiraUser: new ForgeJiraAdapter('user'),
+  store,
+};
+
 export async function fetchIssueReadinessAction(payload: { issueKey: string }) {
-  return fetchIssueReadiness(backgroundDeps, payload);
+  return fetchIssueReadiness(actionDeps, payload);
 }
 
 export async function fetchProjectReadinessAction(payload: { projectKey: string }) {
-  return fetchProjectReadiness(backgroundDeps, payload);
+  return fetchProjectReadiness(actionDeps, payload);
 }
 
 export async function fetchFixFirstAction(payload: { projectKey: string; limit?: number }) {
-  return fetchFixFirst(backgroundDeps, payload);
+  return fetchFixFirst(actionDeps, payload);
 }
 
 export async function fetchSuggestedFixesAction(payload: { projectKey: string }) {
-  return fetchSuggestedFixes(backgroundDeps, payload);
+  return fetchSuggestedFixes(actionDeps, payload);
 }
 
 export async function fetchCompareIssuesAction(payload: {
   issueKeyA: string;
   issueKeyB: string;
 }) {
-  return fetchCompareIssues(backgroundDeps, payload);
+  return fetchCompareIssues(actionDeps, payload);
 }
 
 /** Trigger entry point: issue created/updated/deleted events. */

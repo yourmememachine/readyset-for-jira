@@ -12,7 +12,7 @@
 import { isScoreablePayload, missingScoringFields, normalizeIssue } from '../lib/jira';
 import { isOpen } from '../lib/aggregate';
 import { applyImprovement, draftForIssue, type ImproverDeps } from './improver';
-import { canAdminister, getEffectiveFieldMap, isExcluded } from './resolver';
+import { canAdminister, getEffectiveFieldMap, isExcluded, requireValidProjectKey } from './resolver';
 
 export interface BulkImproveResult {
   issueKey: string;
@@ -34,6 +34,7 @@ export async function bulkImproveTemplates(
   deps: ImproverDeps,
   payload: { projectKey: string },
 ): Promise<{ results: BulkImproveResult[] }> {
+  requireValidProjectKey(payload.projectKey);
   if (!(await canAdminister(deps, payload.projectKey))) {
     throw new Error('Only project administrators can run bulk Improve.');
   }
@@ -43,7 +44,14 @@ export async function bulkImproveTemplates(
     .filter((record) => isOpen(record) && record.score < settings.readyThreshold)
     .sort((a, b) => a.score - b.score)
     .slice(0, BULK_LIMIT);
-  const fieldMap = await getEffectiveFieldMap(deps);
+  const { fieldMap, degraded } = await getEffectiveFieldMap(deps);
+  if (degraded) {
+    // Persistence path (round 2, F-4): bulk Apply writes issues, so a
+    // never-resolved field map refuses the whole run.
+    throw new Error(
+      'ReadySet: Jira field resolution failed and no cached field map exists; bulk Improve aborted.',
+    );
+  }
   // The pre-fetch reads as the invoking user, like every other UI
   // read (war-room A5 residual): Apply re-reads asUser before writing
   // in any case, so drafting from app-token data the admin cannot see

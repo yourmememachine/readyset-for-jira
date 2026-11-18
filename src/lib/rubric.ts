@@ -39,21 +39,35 @@ const PLACEHOLDER_TOKEN_RE = new RegExp(
   `\\b(${PLACEHOLDER_TOKENS.join('|')})s?\\b`,
   'gi',
 );
-/** Hyphenated marker; `\btodo\b` can never match it (cross-review A14). */
-const TO_DO_RE = /\bto-do\b(?!\s+list\b)/gi;
+/** Hyphenated marker; `\btodo\b` can never match it (cross-review A14).
+ *  The "to-do list" prose distinction is made positionally in
+ *  findPlaceholderIn (round 2, F-8), not by a lookahead here — the
+ *  lookahead exempted "to-do list:" headers wholesale. */
+const TO_DO_RE = /\bto-do\b/gi;
 const ACCEPTANCE_CRITERIA_RE = /acceptance criteria/i;
 /**
  * A line that opens an acceptance-criteria section. Two shapes count —
- * a markdown heading (hash marks present, trailing text tolerated), or
- * a plain label line: the phrase alone, or the phrase followed by a
- * colon and an inline start. A prose sentence that merely begins with
- * the words ("Acceptance criteria are not yet written — the PM will
- * add them Friday") is NOT a heading (war-room B16): without heading
- * marks or a colon it is a sentence, not a section label — the same
- * guard the repro-heading pair below already applies (A3).
+ * a markdown heading (hash marks present), or a plain label line. The
+ * phrase may carry ONE qualifier tail (war-room round 2, F-9):
+ * "for|on|of" + up to 3 words, a dash + up to 3 words, or a
+ * parenthetical — "Acceptance criteria for login:" is a heading. But
+ * a prose sentence that merely begins with the words ("Acceptance
+ * criteria are not yet written — the PM will add them Friday") is NOT
+ * a heading (war-room B16): after the optional qualifier the line
+ * must end or continue with a colon — arbitrary trailing prose is a
+ * sentence, not a section label. The round-1 markdown shape captured
+ * any trailing text as an inline body, which made the B16 sentence a
+ * passing section whenever it carried hashes.
  */
-const AC_HEADING_MD_RE = /^\s{0,3}#{1,6}\s*acceptance criteria\b[:\s]*(.*)$/i;
-const AC_HEADING_PLAIN_RE = /^\s{0,3}acceptance criteria\s*(?::\s*(.*))?$/i;
+const AC_QUALIFIER_TAIL = String.raw`(?:\s+(?:for|on|of)\s+(?:\S+\s+){0,2}\S+|\s*[-–—]\s*(?:\S+\s+){0,2}\S+|\s*\([^)]{1,40}\))?`;
+const AC_HEADING_MD_RE = new RegExp(
+  String.raw`^\s{0,3}#{1,6}\s*acceptance criteria${AC_QUALIFIER_TAIL}\s*(?::\s*(.*))?$`,
+  'i',
+);
+const AC_HEADING_PLAIN_RE = new RegExp(
+  String.raw`^\s{0,3}acceptance criteria${AC_QUALIFIER_TAIL}\s*(?::\s*(.*))?$`,
+  'i',
+);
 
 /** The AC heading a line opens with, or null: `{ inline }` = text after the label. */
 function matchAcHeading(line: string): { inline: string } | null {
@@ -76,8 +90,19 @@ function result(
 }
 
 function checkDescription(issue: NormalizedIssue): CheckResult {
-  const length = issue.descriptionText.trim().length;
-  const passed = length >= DESCRIPTION_MIN_CHARS;
+  const text = issue.descriptionText.trim();
+  const length = text.length;
+  // Distinct-token floor (war-room round 2, E #8): length alone is
+  // gameable — 280 characters of repeated gibberish passed. A real
+  // description uses vocabulary; ≥30 distinct tokens (length ≥2)
+  // alongside the character floor is the conjunctive test.
+  const distinctTokens = new Set(
+    text
+      .toLowerCase()
+      .split(/[^\p{L}\p{N}]+/u)
+      .filter((token) => token.length >= 2),
+  ).size;
+  const passed = length >= DESCRIPTION_MIN_CHARS && distinctTokens >= 30;
   return result(
     'description',
     passed,
@@ -85,10 +110,15 @@ function checkDescription(issue: NormalizedIssue): CheckResult {
       ? `Description is ${length} characters.`
       : length === 0
         ? 'Description is empty.'
-        : `Description is only ${length} characters (needs ${DESCRIPTION_MIN_CHARS}+).`,
+        : length < DESCRIPTION_MIN_CHARS
+          ? `Description is only ${length} characters (needs ${DESCRIPTION_MIN_CHARS}+).`
+          : `Description is long enough but uses only ${distinctTokens} distinct words (needs 30+).`,
     'Write a real description: the goal, the context, and what "done" looks like.',
   );
 }
+
+/** CJK characters (Han, kana, Hangul) — unsegmented scripts. */
+const CJK_CHAR_RE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/gu;
 
 /**
  * Meaningful-content test shared by the AC check and the placeholder
@@ -96,16 +126,32 @@ function checkDescription(issue: NormalizedIssue): CheckResult {
  * A body that is empty or placeholder-only does not count as content
  * (cross-review A5/A12) — otherwise "Acceptance criteria: TBD" would
  * outscore honestly omitting the section.
+ *
+ * Round 2 (E #8): the test is CONJUNCTIVE. The old form — ≥3
+ * alphanumeric characters after stripping — passed "xyz" as written
+ * acceptance criteria. Now: marker-stripped length ≥ 8 AND ≥ 2
+ * distinct tokens (token length ≥ 2); OR ≥ 8 CJK characters, since
+ * unsegmented scripts yield no whitespace tokens (the B14 Japanese
+ * case, which must keep passing).
  */
 function hasMeaningfulContent(text: string): boolean {
   const withoutMarkers = text
     .replace(PLACEHOLDER_TOKEN_RE, ' ')
     .replace(TO_DO_RE, ' ')
     .replace(/to be (decided|determined|confirmed)/gi, ' ');
+  const cjkCount = (withoutMarkers.match(CJK_CHAR_RE) ?? []).length;
+  if (cjkCount >= 8) return true;
   // Unicode letters/digits (war-room B14): stripping everything but
-  // a-z0-9 made non-English content fail by construction — a complete
-  // Japanese AC section stripped to length ~0.
-  return withoutMarkers.replace(/[^\p{L}\p{N}]+/gu, '').length >= 3;
+  // a-z0-9 made non-English content fail by construction.
+  const strippedLength = withoutMarkers.replace(/[^\p{L}\p{N}]+/gu, '').length;
+  if (strippedLength < 8) return false;
+  const distinctTokens = new Set(
+    withoutMarkers
+      .toLowerCase()
+      .split(/[^\p{L}\p{N}]+/u)
+      .filter((token) => token.length >= 2),
+  );
+  return distinctTokens.size >= 2;
 }
 
 /**
@@ -259,26 +305,83 @@ function isTodoMarker(text: string, index: number, match: string): boolean {
   return after.startsWith(':');
 }
 
-function findPlaceholder(text: string): string | null {
+/**
+ * Is this "todo list" / "to-do list" occurrence the product noun
+ * rather than a marker (war-room round 2, F-8)? The prose reading
+ * applies ONLY when the token is not all-caps AND the same-line
+ * remainder after "list" is non-empty and does not start with a
+ * colon: "Todo list sharing is broken" is prose, but "TODO list:
+ * finish the docs" and a bare header "Todo list:" are markers. The
+ * round-1 guard skipped every "todo list" — exempting real markers
+ * wholesale.
+ */
+function isProseListPhrase(text: string, matchEnd: number, token: string): boolean {
+  const after = text.slice(matchEnd);
+  const listMatch = /^\s+list\b/i.exec(after);
+  if (!listMatch) return false;
+  const remainder = (after.slice(listMatch[0].length).split('\n')[0] ?? '').trim();
+  const allCaps = token === token.toUpperCase() && token !== token.toLowerCase();
+  return !allCaps && remainder.length > 0 && !remainder.startsWith(':');
+}
+
+/**
+ * Bounded homoglyph map (round 2, E #10): Cyrillic/Greek lookalikes
+ * for the letters the placeholder tokens actually use, so "tоdo"
+ * with a Cyrillic о scans as "todo". Deliberately small — a general
+ * confusables table is a maintenance trap, and the token list is
+ * closed.
+ */
+const HOMOGLYPH_MAP: Record<string, string> = {
+  'а': 'a', 'с': 'c', 'е': 'e', 'о': 'o', 'р': 'p', 'х': 'x',
+  'і': 'i', 'ο': 'o', 'а́': 'a',
+  'А': 'A', 'С': 'C', 'Е': 'E', 'О': 'O', 'Р': 'P', 'Х': 'X',
+};
+const HOMOGLYPH_RE = /[асеорхіοАЕСОРХ]/g;
+
+/**
+ * Scan variants of a text for placeholder matching (round 2, E #10):
+ * the text with zero-width characters stripped (U+200B–D, U+FEFF —
+ * "T\u200bBD" must scan as "TBD"), and a further variant with
+ * intra-token punctuation collapsed and homoglyphs folded
+ * ("T.B.D", "tоdo"). Line structure is preserved in both, so the
+ * positional prose guards still see the real context.
+ */
+function placeholderScanVariants(text: string): string[] {
+  const noZeroWidth = text.replace(/[\u200B-\u200D\uFEFF]/g, '');
+  const collapsed = noZeroWidth
+    .replace(/(\p{L})[.\-_·]+(?=\p{L})/gu, '$1')
+    .replace(HOMOGLYPH_RE, (ch) => HOMOGLYPH_MAP[ch] ?? ch);
+  return collapsed === noZeroWidth ? [noZeroWidth] : [noZeroWidth, collapsed];
+}
+
+function findPlaceholderIn(text: string): string | null {
   PLACEHOLDER_TOKEN_RE.lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = PLACEHOLDER_TOKEN_RE.exec(text)) !== null) {
     const token = (match[1] ?? '').toLowerCase();
     if (token === 'todo') {
-      // "Todo list" is the product noun, not a marker — the same
-      // guard TO_DO_RE applies to the hyphenated form (war-room B15:
-      // a sentence-initial "Todo list sharing is broken" was flagged).
-      if (/^\s+list\b/i.test(text.slice(match.index + match[0].length))) continue;
+      if (isProseListPhrase(text, match.index + match[0].length, match[0])) continue;
       if (!isTodoMarker(text, match.index, match[0])) continue;
     }
     return match[0];
   }
   TO_DO_RE.lastIndex = 0;
-  const toDo = TO_DO_RE.exec(text);
-  if (toDo) return toDo[0];
+  let toDoMatch: RegExpExecArray | null;
+  while ((toDoMatch = TO_DO_RE.exec(text)) !== null) {
+    if (isProseListPhrase(text, toDoMatch.index + toDoMatch[0].length, toDoMatch[0])) continue;
+    return toDoMatch[0];
+  }
   const lower = text.toLowerCase();
   for (const phrase of PLACEHOLDER_PHRASES) {
     if (lower.includes(phrase)) return phrase;
+  }
+  return null;
+}
+
+function findPlaceholder(text: string): string | null {
+  for (const variant of placeholderScanVariants(text)) {
+    const found = findPlaceholderIn(variant);
+    if (found) return found;
   }
   return null;
 }
@@ -317,12 +420,32 @@ function checkNoPlaceholders(issue: NormalizedIssue): CheckResult {
 }
 
 function specificTokens(summary: string): string[] {
+  const lower = summary.toLowerCase();
+  // Unsegmented scripts need real segmentation (round 2, F-20):
+  // splitting Japanese on non-letter boundaries yields ONE token for
+  // a whole sentence, so the specificity floor was unreachable.
+  if (CJK_CHAR_RE.test(lower)) {
+    CJK_CHAR_RE.lastIndex = 0;
+    try {
+      const segmenter = new Intl.Segmenter(undefined, { granularity: 'word' });
+      return [
+        ...new Set(
+          [...segmenter.segment(lower)]
+            .filter((part) => part.isWordLike)
+            .map((part) => part.segment)
+            .filter((token) => token.length >= 2 && !VAGUE_WORDS.has(token) && !STOPWORDS.has(token)),
+        ),
+      ];
+    } catch {
+      // Segmenter unavailable: fall through to the boundary split.
+    }
+  }
+  CJK_CHAR_RE.lastIndex = 0;
   // Distinct tokens only: repeating one specific word three times is
   // not specificity (cross-review A15).
   return [
     ...new Set(
-      summary
-        .toLowerCase()
+      lower
         .split(/[^\p{L}\p{N}]+/u)
         .filter((token) => token.length >= 3 && !VAGUE_WORDS.has(token) && !STOPWORDS.has(token)),
     ),
@@ -376,17 +499,20 @@ function checkDueDate(issue: NormalizedIssue): CheckResult {
 
 /**
  * A line that opens a steps-to-reproduce section (bug pack, v3).
- * Two shapes count — a markdown heading whose text starts with the
- * phrase, or a plain label line: the phrase alone, or the phrase
- * followed by a colon and an inline start. A prose sentence that
- * merely begins with the words ("Steps to reproduce the issue are
- * unknown…") is NOT a heading (upgrade cross-review A3): without a
- * colon or heading marks it is a sentence, not a section label.
+ * Same heading discipline as the AC pair (round 2, F-9): an optional
+ * qualifier tail, then the line must end or continue with a colon —
+ * a prose sentence that merely begins with the words ("Steps to
+ * reproduce the issue are unknown…") is NOT a heading (upgrade
+ * cross-review A3).
  */
-const REPRO_HEADING_MD_RE =
-  /^\s{0,3}#{1,6}\s*(steps to reproduce|reproduction steps|how to reproduce|repro steps)\b[:\s]*(.*)$/i;
-const REPRO_HEADING_PLAIN_RE =
-  /^\s{0,3}(steps to reproduce|reproduction steps|how to reproduce|repro steps)\s*(?::\s*(.*))?$/i;
+const REPRO_HEADING_MD_RE = new RegExp(
+  String.raw`^\s{0,3}#{1,6}\s*(steps to reproduce|reproduction steps|how to reproduce|repro steps)${AC_QUALIFIER_TAIL}\s*(?::\s*(.*))?$`,
+  'i',
+);
+const REPRO_HEADING_PLAIN_RE = new RegExp(
+  String.raw`^\s{0,3}(steps to reproduce|reproduction steps|how to reproduce|repro steps)${AC_QUALIFIER_TAIL}\s*(?::\s*(.*))?$`,
+  'i',
+);
 
 /** Body of a steps-to-reproduce section, mirroring the AC extractor. */
 function reproSectionBody(descriptionText: string): string | null {
@@ -419,6 +545,27 @@ const EXPECTED_LABEL_RE = /(^|\n)\s*expected\s*[:\-–]/i;
 const ACTUAL_LABEL_RE = /(^|\n)\s*actual\s*[:\-–]/i;
 
 /**
+ * Confession lines (war-room round 2, F-3): text that states the
+ * content is ABSENT — "not documented in the issue", "the issue does
+ * not state the expected result". The Improve template writes exactly
+ * these into its repro scaffolding when the source issue has no
+ * steps; they are honest requests for information, not evidence of
+ * it, so the evidence test below removes them before measuring. The
+ * template imports this same pattern family (via its scaffold
+ * wording) so what it emits can never drift into creditable text.
+ */
+export const CONFESSION_LINE_RE =
+  /\b(not (yet )?(documented|stated|specified)|does not (state|specify|document)|to be (added|provided) by)\b/i;
+
+/** A text with confession lines removed — what actually evidences content. */
+export function evidenceText(text: string): string {
+  return text
+    .split('\n')
+    .filter((line) => !CONFESSION_LINE_RE.test(line))
+    .join('\n');
+}
+
+/**
  * Bug pack (upgrade pack, review #1): bug-type issues must document how
  * to reproduce the defect. Returns null for every other issue type —
  * the check is then excluded from scoring entirely rather than passed
@@ -429,14 +576,18 @@ const ACTUAL_LABEL_RE = /(^|\n)\s*actual\s*[:\-–]/i;
 function checkReproSteps(issue: NormalizedIssue): CheckResult | null {
   if (!BUG_ISSUE_TYPES.has(issue.issueType.trim().toLowerCase())) return null;
   const body = reproSectionBody(issue.descriptionText);
-  if (body !== null && hasMeaningfulContent(body)) {
+  // Evidence, not scaffolding (round 2, F-3): a section whose body is
+  // only confession lines ("steps were not documented…") documents
+  // an ABSENCE — the round-1 template fabricated exactly such a body
+  // and the check paid out 10 points for it.
+  if (body !== null && hasMeaningfulContent(evidenceText(body))) {
     return result('repro-steps', true, 'Reproduction steps are documented.', '');
   }
   const text = issue.descriptionText;
   if (
     EXPECTED_LABEL_RE.test(text) &&
     ACTUAL_LABEL_RE.test(text) &&
-    hasMeaningfulContent(text)
+    hasMeaningfulContent(evidenceText(text))
   ) {
     return result(
       'repro-steps',

@@ -60,12 +60,12 @@ const ATTRS_TEXT: Record<string, (attrs: Record<string, unknown>) => string | nu
   blockCard: (attrs) => (typeof attrs.url === 'string' ? attrs.url : null),
 };
 
-function nodeText(node: AdfNode, parts: string[]): void {
+function nodeText(node: AdfNode, parts: string[], hardBreakMarker = '\n'): void {
   if (typeof node.text === 'string') {
     parts.push(node.text);
   }
   if (node.type === 'hardBreak') {
-    parts.push('\n');
+    parts.push(hardBreakMarker);
   }
   const attrsText = ATTRS_TEXT[node.type];
   if (attrsText && node.attrs) {
@@ -80,7 +80,7 @@ function nodeText(node: AdfNode, parts: string[]): void {
   }
   if (Array.isArray(node.content)) {
     for (const child of node.content) {
-      nodeText(child, parts);
+      nodeText(child, parts, hardBreakMarker);
     }
   }
   if (BLOCK_TYPES.has(node.type)) {
@@ -114,17 +114,24 @@ export interface DraftSection {
 /** Anchored AC heading test — the same rule the rubric applies. */
 const AC_HEADING_TEXT_RE = /^acceptance criteria\b/i;
 
+/** Sentinel for hard breaks inside nodePlainText (round 2, F-17). */
+const HARD_BREAK_SENTINEL = '\u0001';
+
 function nodePlainText(node: AdfNode): string {
   const parts: string[] = [];
-  nodeText(node, parts);
-  // Block-internal line breaks are sentence boundaries (war-room
-  // B17): list items and hard breaks inside one node were glued into
-  // a single run-on line ("User can log in Error is shown"), which
-  // the summary deriver then served as one sentence. A break after
-  // sentence punctuation stays a space; any other break becomes a
-  // full stop.
+  nodeText(node, parts, HARD_BREAK_SENTINEL);
+  // Block boundaries are sentence boundaries (war-room B17): list
+  // items inside one node were glued into a single run-on line
+  // ("User can log in Error is shown"), which the summary deriver
+  // then served as one sentence. A break after sentence punctuation
+  // stays a space; any other break becomes a full stop.
+  // A hardBreak is NOT a block boundary (round 2, F-17): it is the
+  // author's own line wrap inside one thought ("word<break>wrap"
+  // became "word. Wrap"), so it always collapses to a single space
+  // via its sentinel — only real block boundaries take the '. ' rule.
   return parts
     .join('')
+    .replaceAll(HARD_BREAK_SENTINEL, ' ')
     .replace(/([^.!?\s])[ \t]*\n[ \t]*(?=\S)/g, '$1. ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -196,9 +203,16 @@ export function mergeAcSectionIntoAdf(input: unknown, acSection: DraftSection): 
   let skipping = false;
   for (const node of doc.content) {
     if (node.type === 'heading') {
-      if (!replaced && AC_HEADING_TEXT_RE.test(nodePlainText(node))) {
-        content.push(...replacement);
-        replaced = true;
+      if (AC_HEADING_TEXT_RE.test(nodePlainText(node))) {
+        // EVERY top-level AC section is replaced (round 2, E #13):
+        // the round-1 merge replaced the first and left later AC
+        // sections in place, so an ac-only Apply on a doc with two
+        // AC sections produced a merged doc still carrying the stale
+        // second one. The replacement is emitted once, at the first.
+        if (!replaced) {
+          content.push(...replacement);
+          replaced = true;
+        }
         skipping = true;
         continue;
       }

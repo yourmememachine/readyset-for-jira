@@ -117,16 +117,32 @@ describe('ScoreStore', () => {
     expect(merged.almostThreshold).toBeLessThanOrEqual(40);
   });
 
-  it('manages rescan checkpoints (opaque token + seen set)', async () => {
+  it('manages scan checkpoints v2 (constant-size manifest + per-page seen shards)', async () => {
     const store = new ScoreStore(new InMemoryKV());
-    expect(await store.getRescanCheckpoint('RS')).toBeUndefined();
-    await store.setRescanCheckpoint('RS', { nextPageToken: 'pg:100', seenKeys: ['RS-1'] });
-    expect(await store.getRescanCheckpoint('RS')).toEqual({
-      nextPageToken: 'pg:100',
-      seenKeys: ['RS-1'],
-    });
-    await store.clearRescanCheckpoint('RS');
-    expect(await store.getRescanCheckpoint('RS')).toBeUndefined();
+    expect(await store.getScanCheckpoint('RS')).toBeUndefined();
+    const manifest = {
+      v: 2 as const,
+      startedAt: '2026-11-17T12:00:00.000Z',
+      pageToken: 'pg:100',
+      pageIndex: 1,
+    };
+    await store.setScanCheckpoint('RS', manifest);
+    await store.setSeenShard('RS', 'app', 0, ['RS-1']);
+    await store.setSeenShard('RS', 'app', 1, ['RS-2']);
+    expect(await store.getScanCheckpoint('RS')).toEqual(manifest);
+    expect(await store.getSeenUnion('RS', 'app', 2)).toEqual(new Set(['RS-1', 'RS-2']));
+    // Origins never share state (war-room B8).
+    expect(await store.getScanCheckpoint('RS', 'ui')).toBeUndefined();
+    await store.clearScanCheckpoint('RS', 'app', 2);
+    expect(await store.getScanCheckpoint('RS')).toBeUndefined();
+    expect(await store.getSeenUnion('RS', 'app', 2)).toEqual(new Set());
+  });
+
+  it('round 2: a legacy (pre-v2) checkpoint value is abandoned, never resumed', async () => {
+    const kv = new InMemoryKV();
+    const store = new ScoreStore(kv);
+    await kv.set('rescan-app:RS', { nextPageToken: 'pg:100', seenKeys: ['RS-1'] });
+    expect(await store.getScanCheckpoint('RS')).toBeUndefined();
   });
 
   it('manages scan state (three-state, cross-review A1)', async () => {

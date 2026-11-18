@@ -203,7 +203,10 @@ describe('war-room fixes (2026-11-18)', () => {
   it('B20: project readiness follows donePolicy include (fix-first stays open-only, per the B9 pin)', async () => {
     const done = makeRawMessyIssue('RS-4');
     done.fields.status = { name: 'Done', statusCategory: { key: 'done' } };
-    const { deps, store } = await makeSeededDeps([makeRawIssue(), makeRawIssueNoEstimate()]);
+    // RS-4 exists in Jira (the fake holds it) but is Done, so the
+    // seeding scan does not score it; its record is stored directly,
+    // as an event would have written it before it closed.
+    const { deps, store } = await makeSeededDeps([makeRawIssue(), makeRawIssueNoEstimate(), done]);
     await scoreAndStore(
       deps,
       normalizeIssue(done, DEFAULT_FIELD_MAP),
@@ -219,7 +222,7 @@ describe('war-room fixes (2026-11-18)', () => {
   it('B21: compare reports a check that exists on only one issue when that side fails it', async () => {
     const bug = makeRawMessyIssue('RS-4');
     bug.fields.issuetype = { name: 'Bug' };
-    const { deps } = await makeSeededDeps([makeRawIssue()]);
+    const { deps } = await makeSeededDeps([makeRawIssue(), bug]);
     await scoreAndStore(
       deps,
       normalizeIssue(bug, DEFAULT_FIELD_MAP),
@@ -233,9 +236,10 @@ describe('war-room fixes (2026-11-18)', () => {
       (diff) => diff.label === 'Steps to reproduce documented',
     );
     expect(repro).toBeDefined();
-    // RS-1 is a Story: the check does not apply there (reported as
-    // not failing); the Bug fails it, and that explains the gap.
-    expect(repro?.aPassed).toBe(true);
+    // RS-1 is a Story: the check does not apply there — round 2
+    // (F-15) reports that as null, never as a pass; the Bug fails
+    // it, and that explains the gap.
+    expect(repro?.aPassed).toBeNull();
     expect(repro?.bPassed).toBe(false);
   });
 });

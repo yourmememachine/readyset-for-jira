@@ -199,10 +199,12 @@ describe('war-room LLM parsing fixes (2026-11-18)', () => {
     expect(sections).toHaveLength(4);
   });
 
-  it('B5: a single-section draft is judged by a floor scaled to one section', () => {
-    const sections = parseDraftMarkdown('## Acceptance criteria\n- Works when retried once.', [
-      'Acceptance criteria',
-    ]);
+  it('B5 (round 2, F-18): the ac-only caller opts into the 10-char floor explicitly', () => {
+    const sections = parseDraftMarkdown(
+      '## Acceptance criteria\n- Works when retried once.',
+      ['Acceptance criteria'],
+      { minChars: 10 },
+    );
     expect(sections).toHaveLength(1);
     expect(sections[0]?.paragraphs[0]).toContain('Works when retried once.');
   });

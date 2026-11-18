@@ -41,7 +41,7 @@ import type { CheckId, ImprovementDraft, ProjectSettings, StoredScore, SummaryDr
 
 export interface KeyValueStore {
   get<T>(key: string): Promise<T | undefined>;
-  set(key: string, value: unknown): Promise<void>;
+  set(key: string, value: unknown, options?: { ttlSeconds?: number }): Promise<void>;
   delete(key: string): Promise<void>;
   /**
    * List keys under a prefix, one page at a time. `cursor` is opaque;
@@ -56,18 +56,35 @@ export interface KeyValueStore {
 
 export class InMemoryKV implements KeyValueStore {
   private readonly map = new Map<string, unknown>();
+  private readonly expiries = new Map<string, number>();
+
+  private expired(key: string): boolean {
+    const at = this.expiries.get(key);
+    return at !== undefined && at <= Date.now();
+  }
 
   async get<T>(key: string): Promise<T | undefined> {
+    if (this.expired(key)) {
+      this.map.delete(key);
+      this.expiries.delete(key);
+      return undefined;
+    }
     const value = this.map.get(key);
     return value === undefined ? undefined : (JSON.parse(JSON.stringify(value)) as T);
   }
 
-  async set(key: string, value: unknown): Promise<void> {
+  async set(key: string, value: unknown, options?: { ttlSeconds?: number }): Promise<void> {
     this.map.set(key, JSON.parse(JSON.stringify(value)));
+    if (options?.ttlSeconds !== undefined) {
+      this.expiries.set(key, Date.now() + options.ttlSeconds * 1000);
+    } else {
+      this.expiries.delete(key);
+    }
   }
 
   async delete(key: string): Promise<void> {
     this.map.delete(key);
+    this.expiries.delete(key);
   }
 
   async list(
@@ -75,7 +92,9 @@ export class InMemoryKV implements KeyValueStore {
     limit: number,
     cursor?: string,
   ): Promise<{ keys: string[]; nextCursor?: string }> {
-    const all = [...this.map.keys()].filter((key) => key.startsWith(prefix)).sort();
+    const all = [...this.map.keys()]
+      .filter((key) => key.startsWith(prefix) && !this.expired(key))
+      .sort();
     const after = cursor ? all.filter((key) => key > cursor) : all;
     const keys = after.slice(0, limit);
     const last = keys[keys.length - 1];
@@ -96,8 +115,10 @@ export const memberKey = (projectKey: string, issueKey: string): string =>
   `idx:${projectKey}:${issueKey}`;
 export const memberPrefix = (projectKey: string): string => `idx:${projectKey}:`;
 export const settingsKey = (projectKey: string): string => `settings:${projectKey}`;
-export const rescanKey = (projectKey: string): string => `rescan:${projectKey}`;
+export const appRescanKey = (projectKey: string): string => `rescan-app:${projectKey}`;
 export const uiRescanKey = (projectKey: string): string => `rescan-ui:${projectKey}`;
+export const seenShardKey = (projectKey: string, scope: 'app' | 'ui', pageIndex: number): string =>
+  `rescan-seen:${projectKey}:${scope}:${pageIndex}`;
 export const scanStateKey = (projectKey: string): string => `scanstate:${projectKey}`;
 export const projectMarkerKey = (projectKey: string): string => `proj:${projectKey}`;
 export const PROJECTS_PREFIX = 'proj:';
@@ -107,16 +128,32 @@ export const draftKey = (issueKey: string, contentHash: string): string =>
   `draft:${issueKey}:${contentHash}`;
 export const summaryDraftKey = (issueKey: string, contentHash: string): string =>
   `sumdraft:${issueKey}:${contentHash}`;
+export const propertyDeletionKey = (issueKey: string): string => `propdel:${issueKey}`;
+export const PROPERTY_DELETION_PREFIX = 'propdel:';
+export const llmQuotaKey = (issueKey: string, day: Date): string =>
+  `llmquota:${issueKey}:${day.toISOString().slice(0, 10)}`;
 
-export interface RescanCheckpoint {
-  /** Opaque Jira `nextPageToken`; null means "start from the first page". */
-  nextPageToken: string | null;
-  /**
-   * Keys the in-progress scan has seen so far, persisted across
-   * invocations: reconciliation after a resumed scan may only delete
-   * records outside the *complete* seen set (cross-review B-NEW-1/2).
-   */
-  seenKeys: string[];
+/**
+ * Scan checkpoint, v2 (war-room round 2, D4/F-1): a constant-size
+ * manifest — the seen set lives in per-page shards
+ * (`rescan-seen:{project}:{scope}:{pageIndex}`, ≤ one page of keys
+ * each), so the value never approaches the 240 KiB KVS limit and a
+ * scan's total checkpoint writes are O(n), not O(n²). The pre-v2
+ * shape (one value carrying every seen key, under the unversioned
+ * `rescan:{project}` key shared by both origins) is never read again:
+ * legacy checkpoints are abandoned, not migrated — their origin is
+ * unrecoverable, and a UI-written one is exactly the poison the
+ * per-origin split exists to discard.
+ */
+export interface ScanCheckpoint {
+  v: 2;
+  /** When this scan sequence started (ISO). Reconcile never deletes a
+   *  record computed after this instant (round 2, D6). */
+  startedAt: string;
+  /** Token that fetches the CURRENT page; null = the first page. */
+  pageToken: string | null;
+  /** Index of the current page; its seen-shard may be partially filled. */
+  pageIndex: number;
 }
 
 export type ScanStatus = 'complete' | 'scanning' | 'failed';
@@ -168,8 +205,16 @@ export function normalizeSettings(
   input: Partial<ProjectSettings> | undefined,
   base: ProjectSettings,
 ): ProjectSettings {
-  const ready = clampThreshold(input?.readyThreshold, base.readyThreshold);
-  const almost = Math.min(ready, clampThreshold(input?.almostThreshold, base.almostThreshold));
+  // Threshold floor (war-room round 2, E #5): an issue passing ZERO
+  // substantive checks can still score 20 (priority + vacuous passes),
+  // so a readyThreshold at or below 20 grades content-free issues
+  // Ready. The floor keeps calibration free above the degenerate
+  // corner: Ready ∈ [30, 100], and Almost strictly below Ready (the
+  // old clamp permitted equality, collapsing the two tiers — and at
+  // 0/0 making both validators vacuous).
+  const ready = Math.max(30, clampThreshold(input?.readyThreshold, base.readyThreshold));
+  const almostRaw = clampThreshold(input?.almostThreshold, base.almostThreshold);
+  const almost = Math.min(ready - 1, almostRaw);
   const checksEnabled = {} as Record<CheckId, boolean>;
   const weights = {} as Record<CheckId, number>;
   for (const id of ALL_CHECK_IDS) {
@@ -192,6 +237,26 @@ export function normalizeSettings(
   // back to the base toggles rather than persist a rubric with no checks.
   if (ALL_CHECK_IDS.every((id) => !checksEnabled[id])) {
     for (const id of ALL_CHECK_IDS) checksEnabled[id] = base.checksEnabled[id];
+  }
+  // Substantive-minimum guard (war-room round 2, E #5): due-date and
+  // no-placeholders pass vacuously on an empty issue, so a config that
+  // enables ONLY vacuous checks (or strips the substantive ones below
+  // a working weight) renormalizes a bare issue to 100 — a gate that
+  // looks calibrated and means nothing. Same remedy as the guards
+  // above: fall back to the base toggles AND weights.
+  const VACUOUS_CHECKS: ReadonlySet<CheckId> = new Set(['due-date', 'no-placeholders']);
+  const substantiveWeight = ALL_CHECK_IDS.reduce(
+    (sum, id) => sum + (!VACUOUS_CHECKS.has(id) && checksEnabled[id] ? weights[id] : 0),
+    0,
+  );
+  const coreMissing =
+    (!checksEnabled.description || weights.description === 0) &&
+    (!checksEnabled['acceptance-criteria'] || weights['acceptance-criteria'] === 0);
+  if (coreMissing || substantiveWeight < 30) {
+    for (const id of ALL_CHECK_IDS) {
+      checksEnabled[id] = base.checksEnabled[id];
+      weights[id] = base.weights[id];
+    }
   }
   return {
     readyThreshold: ready,
@@ -227,7 +292,16 @@ export function normalizeImproveSections(
   let acSeen = false;
   for (const raw of source) {
     if (typeof raw !== 'string') continue;
-    const name = raw.trim().replace(/^#+\s*/, '');
+    // Control characters and newlines are stripped server-side
+    // (war-room round 2, E #6): a section name is interpolated into
+    // the LLM *system* prompt, and the frontend's comma-split is not
+    // a trust boundary — a name carrying "\nSYSTEM: …" must never
+    // survive normalization as a free-standing prompt line.
+    const name = raw
+      .replace(/[\u0000-\u001F\u007F]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/^#+\s*/, '');
     if (name.length === 0 || name.length > 60) continue;
     const isAcHeading = /^acceptance criteria\b/i.test(name);
     if (/acceptance criteria/i.test(name) && !isAcHeading) continue;
@@ -276,6 +350,18 @@ export class ScoreStore {
 
   async saveScore(record: StoredScore): Promise<void> {
     const previous = await this.getScore(record.issueKey);
+    // Monotonic guard (war-room round 2, D12/F-13): triggers deliver
+    // at-least-once and Apply races its own event, so two invocations
+    // can read-modify-write the same record concurrently. If the
+    // stored record was computed STRICTLY later than the incoming one,
+    // the incoming write is stale by construction — drop it rather
+    // than clobber newer score/checks (or resurrect a propertySynced
+    // state the newer record's failed PUT never earned). Equal
+    // timestamps proceed: sequential saves under one clock are the
+    // normal case, not a race.
+    if (previous && previous.computedAt > record.computedAt) {
+      return;
+    }
     if (previous && previous.projectKey !== record.projectKey) {
       // The issue moved projects: drop the stale membership so the old
       // project stops counting it immediately (cross-review A2).
@@ -310,6 +396,45 @@ export class ScoreStore {
 
   async getScore(issueKey: string): Promise<StoredScore | undefined> {
     return this.kv.get<StoredScore>(scoreKey(issueKey));
+  }
+
+  /**
+   * Flip `propertySynced` to true ONLY if the stored record is still
+   * exactly the record that was synced (war-room round 2, F-13): the
+   * panel/event retry paths PUT the cached score's property, and
+   * saving the whole stale record back would clobber a rescore that
+   * landed in between. A mismatch means a newer record exists — its
+   * own sync state governs, and this flip is dropped.
+   */
+  async markPropertySynced(
+    issueKey: string,
+    expected: { score: number; grade: string; computedAt: string },
+  ): Promise<boolean> {
+    const current = await this.getScore(issueKey);
+    if (!current || current.propertySynced === true) return false;
+    if (
+      current.score !== expected.score ||
+      current.grade !== expected.grade ||
+      current.computedAt !== expected.computedAt
+    ) {
+      return false;
+    }
+    await this.kv.set(scoreKey(issueKey), { ...current, propertySynced: true });
+    return true;
+  }
+
+  /** Tombstone a failed entity-property deletion for later retry (F-6). */
+  async addPropertyDeletionTombstone(issueKey: string): Promise<void> {
+    await this.kv.set(propertyDeletionKey(issueKey), 1);
+  }
+
+  async clearPropertyDeletionTombstone(issueKey: string): Promise<void> {
+    await this.kv.delete(propertyDeletionKey(issueKey));
+  }
+
+  async listPropertyDeletionTombstones(limit = 50): Promise<string[]> {
+    const keys = await this.listAllKeys(PROPERTY_DELETION_PREFIX);
+    return keys.slice(0, limit).map((key) => key.slice(PROPERTY_DELETION_PREFIX.length));
   }
 
   /** Remove a score and its project membership (delete / reconcile). */
@@ -366,40 +491,98 @@ export class ScoreStore {
   }
 
   /**
-   * Scan checkpoints are namespaced by origin (war-room B8): UI chunks
-   * (asUser, never reconciling) write `rescan-ui:{project}`, while app
-   * scans (asApp, reconciling) keep `rescan:{project}`. Before this
-   * split, a nightly scan could resume from a checkpoint a restricted
-   * user's dashboard chunks had written and reconcile against a
-   * seen-set that never contained the issues that user could not see —
-   * deleting their records. Each origin now only ever resumes from
-   * its own checkpoints.
+   * Scan checkpoints v2 (see {@link ScanCheckpoint}): a constant-size
+   * manifest per origin — app scans write `rescan-app:{project}`,
+   * UI chunks write `rescan-ui:{project}` — plus one seen-shard per
+   * page. Origins never share state (war-room B8), and the legacy
+   * shared key is never read again (round 2, F-1).
    */
-  async getRescanCheckpoint(
-    projectKey: string,
-    scope: 'app' | 'ui' = 'app',
-  ): Promise<RescanCheckpoint | undefined> {
-    return this.kv.get<RescanCheckpoint>(scope === 'ui' ? uiRescanKey(projectKey) : rescanKey(projectKey));
+  private checkpointKey(projectKey: string, scope: 'app' | 'ui'): string {
+    return scope === 'ui' ? uiRescanKey(projectKey) : appRescanKey(projectKey);
   }
 
-  async setRescanCheckpoint(
+  async getScanCheckpoint(
     projectKey: string,
-    checkpoint: RescanCheckpoint,
+    scope: 'app' | 'ui' = 'app',
+  ): Promise<ScanCheckpoint | undefined> {
+    const stored = await this.kv.get<ScanCheckpoint>(this.checkpointKey(projectKey, scope));
+    // Anything that is not a v2 manifest (a legacy value under a
+    // reused key) is abandoned, never resumed.
+    if (!stored || stored.v !== 2) return undefined;
+    return stored;
+  }
+
+  async setScanCheckpoint(
+    projectKey: string,
+    checkpoint: ScanCheckpoint,
     scope: 'app' | 'ui' = 'app',
   ): Promise<void> {
-    await this.kv.set(scope === 'ui' ? uiRescanKey(projectKey) : rescanKey(projectKey), checkpoint);
+    await this.kv.set(this.checkpointKey(projectKey, scope), checkpoint);
   }
 
-  async clearRescanCheckpoint(projectKey: string, scope: 'app' | 'ui' = 'app'): Promise<void> {
-    await this.kv.delete(scope === 'ui' ? uiRescanKey(projectKey) : rescanKey(projectKey));
+  async setSeenShard(
+    projectKey: string,
+    scope: 'app' | 'ui',
+    pageIndex: number,
+    issueKeys: string[],
+  ): Promise<void> {
+    await this.kv.set(seenShardKey(projectKey, scope, pageIndex), issueKeys);
   }
 
-  async getFieldMap(): Promise<JiraFieldMap | undefined> {
-    return this.kv.get<JiraFieldMap>(FIELDMAP_KEY);
+  async getSeenShard(
+    projectKey: string,
+    scope: 'app' | 'ui',
+    pageIndex: number,
+  ): Promise<string[]> {
+    return (await this.kv.get<string[]>(seenShardKey(projectKey, scope, pageIndex))) ?? [];
   }
 
-  async setFieldMap(fieldMap: JiraFieldMap): Promise<void> {
-    await this.kv.set(FIELDMAP_KEY, fieldMap);
+  /** Union of shards 0..pageCount-1 — the complete seen set at reconcile. */
+  async getSeenUnion(
+    projectKey: string,
+    scope: 'app' | 'ui',
+    pageCount: number,
+  ): Promise<Set<string>> {
+    const seen = new Set<string>();
+    for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
+      for (const key of await this.getSeenShard(projectKey, scope, pageIndex)) {
+        seen.add(key);
+      }
+    }
+    return seen;
+  }
+
+  async clearScanCheckpoint(
+    projectKey: string,
+    scope: 'app' | 'ui' = 'app',
+    pageCount = 0,
+  ): Promise<void> {
+    await this.kv.delete(this.checkpointKey(projectKey, scope));
+    for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
+      await this.kv.delete(seenShardKey(projectKey, scope, pageIndex));
+    }
+  }
+
+  /**
+   * The field map is cached WITH its resolution time (war-room round
+   * 2, D8): a site configuration treated as immutable stayed wrong
+   * forever. Callers treat a map older than 24 h as stale and
+   * re-resolve. A legacy bare map (written before the wrapper) reads
+   * as resolvedAt 0 — one forced re-resolution, then it heals.
+   */
+  async getFieldMap(): Promise<{ map: JiraFieldMap; resolvedAt: number } | undefined> {
+    const stored = await this.kv.get<
+      { map: JiraFieldMap; resolvedAt: number } | JiraFieldMap
+    >(FIELDMAP_KEY);
+    if (!stored) return undefined;
+    if ('map' in stored && 'resolvedAt' in stored) {
+      return stored as { map: JiraFieldMap; resolvedAt: number };
+    }
+    return { map: stored as JiraFieldMap, resolvedAt: 0 };
+  }
+
+  async setFieldMap(fieldMap: JiraFieldMap, resolvedAt: number): Promise<void> {
+    await this.kv.set(FIELDMAP_KEY, { map: fieldMap, resolvedAt });
   }
 
   async getRosterCheckpoint(): Promise<RosterCheckpoint | undefined> {
@@ -415,7 +598,13 @@ export class ScoreStore {
   }
 
   async saveDraft(draft: ImprovementDraft): Promise<void> {
-    await this.kv.set(draftKey(draft.issueKey, draft.contentHash), draft);
+    // Drafts are cache, not state (war-room round 2, D11/E12): a
+    // 30-day TTL bounds the draft:{issue}:{hash} key family, which
+    // otherwise grew forever — drafts were previously deleted only
+    // on a successful Apply.
+    await this.kv.set(draftKey(draft.issueKey, draft.contentHash), draft, {
+      ttlSeconds: 30 * 24 * 60 * 60,
+    });
   }
 
   /** Remove a consumed draft (war-room B22): an applied draft's hash is
@@ -432,12 +621,42 @@ export class ScoreStore {
   }
 
   async saveSummaryDraft(draft: SummaryDraft): Promise<void> {
-    await this.kv.set(summaryDraftKey(draft.issueKey, draft.contentHash), draft);
+    await this.kv.set(summaryDraftKey(draft.issueKey, draft.contentHash), draft, {
+      ttlSeconds: 30 * 24 * 60 * 60,
+    });
   }
 
   /** Remove a consumed summary draft (war-room B22, as deleteDraft). */
   async deleteSummaryDraft(issueKey: string, contentHash: string): Promise<void> {
     await this.kv.delete(summaryDraftKey(issueKey, contentHash));
+  }
+
+  /** Delete every draft (both kinds) held for an issue — the
+   *  issue-deleted event path (war-room round 2, E #12): drafts for a
+   *  dead issue are unreachable garbage without this. */
+  async deleteIssueDrafts(issueKey: string): Promise<void> {
+    for (const prefix of [`draft:${issueKey}:`, `sumdraft:${issueKey}:`]) {
+      const keys = await this.listAllKeys(prefix);
+      for (const key of keys) {
+        await this.kv.delete(key);
+      }
+    }
+  }
+
+  /**
+   * Daily LLM-call quota counter (war-room round 2, E #12): drafting
+   * is open to any viewer and every distinct content hash is a billed
+   * call, so Improve caps LLM drafts per issue per day and falls back
+   * to the (free, deterministic) template beyond the cap. Returns the
+   * count AFTER incrementing. Deliberately NOT gated on the analytics
+   * opt-in — this is cost control, not telemetry.
+   */
+  async incrementLlmQuota(issueKey: string, now: Date): Promise<number> {
+    const key = llmQuotaKey(issueKey, now);
+    const current = (await this.kv.get<number>(key)) ?? 0;
+    const next = current + 1;
+    await this.kv.set(key, next, { ttlSeconds: 2 * 24 * 60 * 60 });
+    return next;
   }
 
   /**
@@ -453,7 +672,13 @@ export class ScoreStore {
     const key = analyticsKey(projectKey, now);
     const current = (await this.kv.get<AnalyticsDay>(key)) ?? { scores: 0, drafts: 0, applies: 0 };
     current[field] += 1;
-    await this.kv.set(key, current);
+    // 14-day TTL (war-room round 2, D11): only the last 7 days are
+    // ever read, and the per-day keys otherwise accumulated forever.
+    // Accepted residual (D12): this read-modify-write can lose an
+    // increment under true concurrency — the counters are advisory
+    // and labelled approximate in the UI; no correctness consumer
+    // reads them.
+    await this.kv.set(key, current, { ttlSeconds: 14 * 24 * 60 * 60 });
   }
 
   /** Sum the last `days` daily counters (including today) for the dashboard. */

@@ -60,8 +60,9 @@ const GRADE_APPEARANCE: Record<Grade, 'success' | 'inprogress' | 'removed'> = {
   'not-ready': 'removed',
 };
 
-/** Safety cap on chunk-continuation calls per user action. */
-const MAX_SCAN_CHUNKS = 50;
+/** Safety cap on chunk-continuation calls per user action. 200 chunks
+ *  at the round-2 UI page size of 25 covers a 5,000-issue project. */
+const MAX_SCAN_CHUNKS = 200;
 
 function extractProjectKey(context: unknown): string | null {
   const extension = (context as { extension?: Record<string, unknown> } | undefined)
@@ -361,7 +362,10 @@ function BulkImproveSection({
       </Inline>
       {error ? (
         <SectionMessage title="Bulk Improve did not complete" appearance="error">
-          <Text>{error}</Text>
+          <Text>
+            {error} Any issues already improved keep their changes and audit comments — reopen the
+            dashboard to see current scores.
+          </Text>
         </SectionMessage>
       ) : null}
       {results ? (

@@ -5,7 +5,6 @@ import {
   continueScanProject,
   getIssuePanel,
   getProjectDashboard,
-  getSettings,
   rescanProject,
   saveSettings,
   scanProject,
@@ -167,11 +166,14 @@ describe('getIssuePanel', () => {
     const before = await getIssuePanel(deps, { issueKey: 'RS-1' });
     expect(before.score).toBe(90); // story points sit under 10042; default map reads 10016
 
-    await store.setFieldMap({
-      storyPoints: 'customfield_10042',
-      epicLink: 'customfield_10014',
-      acceptanceCriteria: null,
-    });
+    await store.setFieldMap(
+      {
+        storyPoints: 'customfield_10042',
+        epicLink: 'customfield_10014',
+        acceptanceCriteria: null,
+      },
+      FIXED_NOW.getTime(),
+    );
     const after = await getIssuePanel(deps, { issueKey: 'RS-1' });
     expect(after.fromCache).toBe(false);
     expect(after.score).toBe(100);
@@ -317,13 +319,15 @@ describe('getProjectDashboard', () => {
     );
     const { deps, jira } = makeDeps(issues);
     const dashboard = await getProjectDashboard(deps, { projectKey: 'RS' });
-    expect(dashboard.stats.openScored).toBe(100);
+    // One UI chunk per open — 25 issues since round 2 (D5).
+    expect(dashboard.stats.openScored).toBe(25);
     expect(dashboard.scanStatus).toBe('scanning');
-    expect(jira.searchCalls.map((call) => call.pageToken)).toEqual([null]);
 
-    const continued = await continueScanProject(deps, { projectKey: 'RS' });
-    expect(continued).toEqual({ projectKey: 'RS', scanned: 50, resumed: true, complete: true });
-    expect(jira.searchCalls.map((call) => call.pageToken)).toEqual([null, 'pg:100']);
+    let continued = await continueScanProject(deps, { projectKey: 'RS' });
+    expect(continued.resumed).toBe(true);
+    while (!continued.complete) {
+      continued = await continueScanProject(deps, { projectKey: 'RS' });
+    }
 
     const after = await getProjectDashboard(deps, { projectKey: 'RS' });
     expect(after.stats.openScored).toBe(150);
@@ -333,7 +337,8 @@ describe('getProjectDashboard', () => {
 
   it('A1: an event-scored issue does not suppress the first dashboard scan', async () => {
     const issues = [makeRawIssue(), makeRawIssueNoEstimate(), makeRawMessyIssue()];
-    const { deps, jira } = makeDeps(issues);
+    const { deps, jira, store } = makeDeps(issues);
+    await store.registerProject('RS'); // ReadySet in use on RS (round-2 D9 gate)
     await handleIssueEvent(deps, v2Event(issues[0] as RawJiraIssue));
     const dashboard = await getProjectDashboard(deps, { projectKey: 'RS' });
     expect(jira.searchCalls.length).toBeGreaterThan(0);
@@ -360,10 +365,14 @@ describe('getProjectDashboard', () => {
     const first = await getProjectDashboard(deps, { projectKey: 'RS' });
     expect(first.stats.openScored).toBe(0);
     expect(first.scanStatus).toBe('complete');
-    expect(jira.searchCalls).toHaveLength(1);
+    // Two searches on first open: the round-2 visibility enumeration
+    // plus the scan chunk itself.
+    expect(jira.searchCalls).toHaveLength(2);
     const second = await getProjectDashboard(deps, { projectKey: 'RS' });
     expect(second.stats.openScored).toBe(0);
-    expect(jira.searchCalls).toHaveLength(1);
+    // The scan does NOT rerun (state is complete) — only the
+    // per-open visibility enumeration repeats.
+    expect(jira.searchCalls).toHaveLength(3);
   });
 });
 
@@ -375,12 +384,25 @@ describe('rescan and scheduled rescan', () => {
     const { deps, store } = makeDeps(issues);
     // UI-origin checkpoint (war-room B8 split): a manual rescan is a
     // UI flow and seeds/resumes/clears the `rescan-ui:` key only.
-    await store.setRescanCheckpoint('RS', { nextPageToken: 'pg:100', seenKeys: ['RS-1'] }, 'ui');
+    await store.setScanCheckpoint(
+      'RS',
+      { v: 2, startedAt: FIXED_NOW.toISOString(), pageToken: 'pg:100', pageIndex: 1 },
+      'ui',
+    );
+    await store.setSeenShard('RS', 'ui', 0, ['RS-1']);
     const first = await rescanProject(deps, { projectKey: 'RS' });
-    expect(first).toEqual({ projectKey: 'RS', scanned: 100, resumed: false, complete: false });
-    const continued = await continueScanProject(deps, { projectKey: 'RS' });
-    expect(continued).toEqual({ projectKey: 'RS', scanned: 50, resumed: true, complete: true });
-    expect(await store.getRescanCheckpoint('RS', 'ui')).toBeUndefined();
+    // UI chunks are 25 issues (round 2, D5): the 25 s resolver budget
+    // cannot fit a 100-issue chunk.
+    expect(first).toEqual({ projectKey: 'RS', scanned: 25, resumed: false, complete: false });
+    let continued = await continueScanProject(deps, { projectKey: 'RS' });
+    expect(continued.resumed).toBe(true);
+    let scannedTotal = first.scanned + continued.scanned;
+    while (!continued.complete) {
+      continued = await continueScanProject(deps, { projectKey: 'RS' });
+      scannedTotal += continued.scanned;
+    }
+    expect(scannedTotal).toBe(150);
+    expect(await store.getScanCheckpoint('RS', 'ui')).toBeUndefined();
   });
 
   it('scheduled rescan covers every known project and resumes checkpoints', async () => {
@@ -394,10 +416,13 @@ describe('rescan and scheduled rescan', () => {
     // Register both projects (a dashboard open is what registers them).
     await getProjectDashboard(deps, { projectKey: 'RS' });
     await getProjectDashboard(deps, { projectKey: 'OPS' });
-    await store.setRescanCheckpoint('RS', {
-      nextPageToken: 'pg:2',
-      seenKeys: ['RS-1', 'RS-2'],
+    await store.setScanCheckpoint('RS', {
+      v: 2,
+      startedAt: FIXED_NOW.toISOString(),
+      pageToken: 'pg:2',
+      pageIndex: 1,
     });
+    await store.setSeenShard('RS', 'app', 0, ['RS-1', 'RS-2']);
 
     const result = await handleScheduledRescan(deps);
     expect(result.errors).toEqual([]);
@@ -405,7 +430,7 @@ describe('rescan and scheduled rescan', () => {
     const ops = result.projects.find((candidate) => candidate.projectKey === 'OPS');
     expect(rs).toEqual({ projectKey: 'RS', scanned: 1, complete: true });
     expect(ops).toEqual({ projectKey: 'OPS', scanned: 1, complete: true });
-    expect(await store.getRescanCheckpoint('RS')).toBeUndefined();
+    expect(await store.getScanCheckpoint('RS')).toBeUndefined();
   });
 
   it('A9: a scan that fails after page 1 checkpoints; the next run resumes and finishes', async () => {
@@ -432,16 +457,19 @@ describe('rescan and scheduled rescan', () => {
     const first = await handleScheduledRescan(deps);
     expect(first.projects).toEqual([]);
     expect(first.errors).toEqual([{ projectKey: 'RS', error: 'HTTP 503 from Jira' }]);
-    const checkpoint = await store.getRescanCheckpoint('RS');
-    expect(checkpoint?.nextPageToken).toBe('pg:100');
-    expect(checkpoint?.seenKeys).toHaveLength(100);
+    const checkpoint = await store.getScanCheckpoint('RS');
+    expect(checkpoint?.pageToken).toBe('pg:100');
+    expect(checkpoint?.pageIndex).toBe(1);
+    expect(
+      (await store.getSeenUnion('RS', 'app', (checkpoint?.pageIndex ?? 0) + 1)).size,
+    ).toBe(100);
     expect((await store.getScanState('RS'))?.status).toBe('failed');
 
     const second = await handleScheduledRescan(deps);
     expect(second.errors).toEqual([]);
     expect(second.projects).toEqual([{ projectKey: 'RS', scanned: 50, complete: true }]);
     expect(await store.getProjectScores('RS')).toHaveLength(150);
-    expect(await store.getRescanCheckpoint('RS')).toBeUndefined();
+    expect(await store.getScanCheckpoint('RS')).toBeUndefined();
     expect((await store.getScanState('RS'))?.status).toBe('complete');
   });
 
@@ -451,7 +479,12 @@ describe('rescan and scheduled rescan', () => {
       makeRawIssueNoEstimate(),
       makeRawMessyIssue(),
     ]);
-    await store.setRescanCheckpoint('RS', { nextPageToken: 'not-a-real-token', seenKeys: [] });
+    await store.setScanCheckpoint('RS', {
+      v: 2,
+      startedAt: FIXED_NOW.toISOString(),
+      pageToken: 'not-a-real-token',
+      pageIndex: 0,
+    });
     const result = await scanProject(deps, 'RS', { resume: true });
     expect(result).toEqual({ projectKey: 'RS', scanned: 3, resumed: false, complete: true });
     expect(await store.getProjectScores('RS')).toHaveLength(3);
@@ -550,6 +583,7 @@ describe('rescan and scheduled rescan', () => {
 describe('handleIssueEvent', () => {
   it('B5: scores a v2 payload by merging customFields, without any REST call', async () => {
     const { deps, store, jira } = makeDeps([makeRawIssue({}, 'RS-7')]);
+    await store.registerProject('RS'); // ReadySet in use on RS (round-2 D9 gate)
     const result = await handleIssueEvent(deps, v2Event(makeRawIssue({}, 'RS-7')));
     expect(result).toEqual({ handled: true, issueKey: 'RS-7' });
     const record = await store.getScore('RS-7');
@@ -563,6 +597,7 @@ describe('handleIssueEvent', () => {
     const event = v2Event(raw);
     event.customFields = { customfield_10016: 5 };
     const { deps, store } = makeDeps([raw]);
+    await store.registerProject('RS'); // ReadySet in use on RS (round-2 D9 gate)
     const result = await handleIssueEvent(deps, event);
     expect(result.handled).toBe(true);
     expect((await store.getScore('RS-8'))?.score).toBe(100);
@@ -570,6 +605,7 @@ describe('handleIssueEvent', () => {
 
   it('B5: falls back to REST when the event omits custom fields', async () => {
     const { deps, store, jira } = makeDeps([makeRawIssue({}, 'RS-7')]);
+    await store.registerProject('RS'); // ReadySet in use on RS (round-2 D9 gate)
     const event = v2Event(makeRawIssue({}, 'RS-7'));
     event.customFieldsStatus = 'OMITTED';
     delete event.customFields;
@@ -593,6 +629,7 @@ describe('handleIssueEvent', () => {
 
   it('B9: a deleted-issue event removes the stored score immediately', async () => {
     const { deps, store } = makeDeps([makeRawIssue({}, 'RS-7')]);
+    await store.registerProject('RS'); // ReadySet in use on RS (round-2 D9 gate)
     await handleIssueEvent(deps, v2Event(makeRawIssue({}, 'RS-7')));
     expect(await store.getScore('RS-7')).toBeDefined();
     const result = await handleIssueEvent(
@@ -615,6 +652,7 @@ describe('handleIssueEvent', () => {
   it('live RS-2 incident: a sparse field-edit event refetches and scores the FULL issue (90 -> 100), never the partial 35', async () => {
     const rs2 = makeRawIssueNoEstimate('RS-2'); // worth 90: only the estimate is missing
     const { deps, store, jira } = makeDeps([rs2]);
+    await store.registerProject('RS'); // ReadySet in use on RS (round-2 D9 gate)
     await handleIssueEvent(deps, v2Event(rs2));
     expect((await store.getScore('RS-2'))?.score).toBe(90);
 
@@ -666,21 +704,25 @@ describe('handleIssueEvent', () => {
 describe('settings handlers', () => {
   it('returns defaults, then clamps and enforces threshold ordering on save', async () => {
     const { deps } = makeDeps([]);
-    expect(await getSettings(deps, { projectKey: 'RS' })).toEqual(DEFAULT_SETTINGS);
+    expect((await getProjectDashboard(deps, { projectKey: 'RS' })).settings).toEqual(
+      DEFAULT_SETTINGS,
+    );
 
     const clamped = await saveSettings(deps, {
       projectKey: 'RS',
       settings: { ...DEFAULT_SETTINGS, readyThreshold: 140, almostThreshold: 130 },
     });
     expect(clamped.readyThreshold).toBe(100);
-    expect(clamped.almostThreshold).toBe(100);
+    // Round 2 (E #5): Almost is STRICTLY below Ready — equality
+    // collapsed the two tiers.
+    expect(clamped.almostThreshold).toBe(99);
 
     const ordered = await saveSettings(deps, {
       projectKey: 'RS',
       settings: { ...DEFAULT_SETTINGS, readyThreshold: 70, almostThreshold: 90 },
     });
     expect(ordered.readyThreshold).toBe(70);
-    expect(ordered.almostThreshold).toBe(70);
+    expect(ordered.almostThreshold).toBe(69);
   });
 
   it('A21: a NaN threshold falls back to the current value instead of being stored', async () => {
@@ -765,6 +807,7 @@ describe('upgrade cross-review fixes (A1 event type gate, B2 property skip)', ()
   it('A1: a typeless bug event refetches and scores WITH the bug pack (91, not 100)', async () => {
     const restRaw = makeRawIssue({ issuetype: { name: 'Bug' } }, 'RS-11');
     const { deps, store, jira } = makeDeps([restRaw]);
+    await store.registerProject('RS'); // ReadySet in use on RS (round-2 D9 gate)
     const event = v2Event(restRaw);
     delete event.issue.fields.issuetype;
     const result = await handleIssueEvent(deps, event);
@@ -780,6 +823,7 @@ describe('upgrade cross-review fixes (A1 event type gate, B2 property skip)', ()
     const restRaw = makeRawIssue({}, 'RS-12');
     delete restRaw.fields.issuetype;
     const { deps, store, jira } = makeDeps([restRaw]);
+    await store.registerProject('RS'); // ReadySet in use on RS (round-2 D9 gate)
     const event = v2Event(restRaw);
     const result = await handleIssueEvent(deps, event);
     expect(result.handled).toBe(false);
@@ -828,6 +872,7 @@ describe('war-room fixes (2026-11-18)', () => {
   it('F1: the event path retries a failed property write on a later event', async () => {
     const raw = makeRawIssue();
     const { deps, jira, store } = makeDeps([raw]);
+    await store.registerProject('RS'); // ReadySet in use on RS (round-2 D9 gate)
     jira.setScorePropertyError = new Error('property PUT failed');
     await handleIssueEvent(deps, v2Event(raw));
     expect((await store.getScore('RS-1'))?.propertySynced).toBe(false);
@@ -865,7 +910,7 @@ describe('war-room fixes (2026-11-18)', () => {
     expect(await store.getScore('RS-4')).toBeDefined();
   });
 
-  it('F4: a field-list failure degrades to the default field map instead of failing the dashboard', async () => {
+  it('F4 (round 2): a field-list failure with no cached map fails the scan without storing, and is never cached', async () => {
     class FieldListFailJira extends FakeJiraAdapter {
       calls = 0;
       override async listFields(): Promise<JiraFieldInfo[]> {
@@ -874,9 +919,15 @@ describe('war-room fixes (2026-11-18)', () => {
       }
     }
     const jira = new FieldListFailJira([makeRawIssue()]);
-    const { deps } = makeDepsWithJira(jira);
+    const { deps, store } = makeDepsWithJira(jira);
     const payload = await getProjectDashboard(deps, { projectKey: 'RS' });
-    expect(payload.stats.openScored).toBe(1);
+    // Round-1 behaviour (score on never-resolved defaults) is exactly
+    // what F-4 forbids for persistence paths: the dashboard renders,
+    // the scan reports failed, and NOTHING is stored on the default
+    // map. Display paths (the panel) still degrade — see resolver.
+    expect(payload.stats.openScored).toBe(0);
+    expect(payload.scanStatus).toBe('failed');
+    expect(await store.getScore('RS-1')).toBeUndefined();
     // The failure is not cached: the next dashboard retries discovery
     // instead of serving a cached failure for the process lifetime.
     const afterFirst = jira.calls;
@@ -895,7 +946,7 @@ describe('war-room fixes (2026-11-18)', () => {
     };
     await expect(rescanProject(deps, { projectKey: 'RS' })).rejects.toThrow(/KVS unavailable/);
     expect((await store.getScanState('RS'))?.status).toBe('failed');
-    expect(await store.getRescanCheckpoint('RS', 'ui')).toBeDefined();
+    expect(await store.getScanCheckpoint('RS', 'ui')).toBeDefined();
   });
 
   it('A13: a tokenless non-final page fails the scan instead of reconciling a partial project', async () => {
@@ -909,7 +960,12 @@ describe('war-room fixes (2026-11-18)', () => {
         return { issues: page.issues, isLast: false };
       }
     }
-    const { deps, store } = makeDepsWithJira(new TokenlessJira([makeRawIssue()]));
+    // 30 issues > the 25-issue UI page: the first page comes back
+    // FULL and tokenless, which is a contract violation, not a
+    // completion (round 2, F-10 — a short tokenless first page now
+    // legitimately completes).
+    const many = Array.from({ length: 30 }, (_, index) => makeRawIssue({}, `RS-${index + 1}`));
+    const { deps, store } = makeDepsWithJira(new TokenlessJira(many));
     await expect(rescanProject(deps, { projectKey: 'RS' })).rejects.toThrow(
       /without a final page marker/,
     );
@@ -922,16 +978,19 @@ describe('war-room fixes (2026-11-18)', () => {
     const issues = Array.from({ length: 150 }, (_, index) => makeRawIssue({}, `RS-${index + 1}`));
     const { deps, store } = makeDeps(issues);
     // A dashboard open registers the project and runs one UI chunk
-    // (100 of 150), leaving a UI checkpoint behind.
+    // (25 of 150), leaving a UI checkpoint behind.
     await getProjectDashboard(deps, { projectKey: 'RS' });
-    expect(await store.getRescanCheckpoint('RS', 'ui')).toBeDefined();
+    expect(await store.getScanCheckpoint('RS', 'ui')).toBeDefined();
     // The scheduled scan starts from its OWN checkpoint, completes
     // both chunks, and reconciles against its own full seen set.
     const scheduled = await handleScheduledRescan(deps);
     expect(scheduled.errors).toEqual([]);
     expect((await store.getProjectScores('RS')).length).toBe(150);
     // The UI scan still has its own continuation available.
-    const continued = await continueScanProject(deps, { projectKey: 'RS' });
+    let continued = await continueScanProject(deps, { projectKey: 'RS' });
+    while (!continued.complete) {
+      continued = await continueScanProject(deps, { projectKey: 'RS' });
+    }
     expect(continued.complete).toBe(true);
     expect((await store.getProjectScores('RS')).length).toBe(150);
   });

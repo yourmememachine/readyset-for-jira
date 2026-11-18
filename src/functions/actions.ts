@@ -3,17 +3,67 @@
  *
  * The three GET actions behind the `rovo:agent`. They are plain
  * dependency-injected functions over the same {@link ScoreStore} the
- * panel and dashboard read — one engine, four surfaces — and they
- * answer ONLY from stored scores: no Jira calls, no LLM calls, so an
- * agent answer can never invent a number ReadySet did not compute
- * (DESIGN.md §5.1). `src/index.ts` binds them to the manifest's
- * action functions; tests drive them with the in-memory store.
+ * panel and dashboard read — one engine, four surfaces — and every
+ * NUMBER they answer comes from stored scores, so an agent answer can
+ * never invent a number ReadySet did not compute (DESIGN.md §5.1).
+ * `src/index.ts` binds them to the manifest's action functions; tests
+ * drive them with the in-memory store.
+ *
+ * Round 2 (D2 / E #1/#2 — the round's Blocker): stored records carry
+ * no Jira permissions, and the action functions receive the invoking
+ * user's context, so every answer is visibility-checked AS THAT USER
+ * before a record is served: single-issue actions probe the issue
+ * with an asUser read (fail closed, and "not visible" is
+ * indistinguishable from "not scored"), and project actions require
+ * BROWSE_PROJECTS and compute their aggregates over the subset of
+ * issues the asker can actually see. The earlier "no Jira calls"
+ * framing is retired — it was the vulnerability.
  */
 import { computeProjectStats, isOpen } from '../lib/aggregate';
+import { getVisibleIssueKeys } from '../lib/jira';
 import { gradeForScore, projectedScoreIfFixed } from '../lib/rubric';
 import type { ScanStatus } from '../lib/store';
-import type { CheckResult, Grade } from '../lib/types';
-import type { ResolverDeps } from './resolver';
+import type { CheckResult, Grade, StoredScore } from '../lib/types';
+import { canBrowseProject, requireValidProjectKey, type ResolverDeps } from './resolver';
+
+/**
+ * Whether the invoking user can see this issue, probed with an asUser
+ * read. Any failure — 404, permission, network — is a "no": the
+ * Coach never serves a record it could not verify the asker may see.
+ */
+async function canViewIssue(deps: ResolverDeps, issueKey: string): Promise<boolean> {
+  const adapter = deps.jiraUser ?? deps.jira;
+  try {
+    await adapter.getIssue(issueKey);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The records of a project the invoking user may see, or null when
+ * the user may not browse the project at all / visibility could not
+ * be established (callers then answer with their empty shape).
+ * Aggregates are computed over this subset only (round 2, chair
+ * ruling): filtering just the offender list would still leak the
+ * score distribution of issues the asker cannot see.
+ */
+async function visibleProjectRecords(
+  deps: ResolverDeps,
+  projectKey: string,
+): Promise<StoredScore[] | null> {
+  if (!(await canBrowseProject(deps, projectKey))) return null;
+  const adapter = deps.jiraUser ?? deps.jira;
+  let visibleKeys: Set<string>;
+  try {
+    visibleKeys = await getVisibleIssueKeys(adapter, projectKey);
+  } catch {
+    return null;
+  }
+  const records = await deps.store.getProjectScores(projectKey);
+  return records.filter((record) => visibleKeys.has(record.issueKey));
+}
 
 export interface IssueReadinessResult {
   found: boolean;
@@ -43,6 +93,11 @@ export async function fetchIssueReadiness(
   if (!record) {
     // Honest empty answer: the Coach prompt instructs the agent to
     // report "not scored yet" for exactly this shape.
+    return { found: false, issueKey: payload.issueKey };
+  }
+  if (!(await canViewIssue(deps, payload.issueKey))) {
+    // Not visible to the asker (round 2, D2/E #1): answer exactly as
+    // if unscored — confirming existence would itself leak.
     return { found: false, issueKey: payload.issueKey };
   }
   const settings = await deps.store.getSettings(record.projectKey);
@@ -87,13 +142,32 @@ export async function fetchProjectReadiness(
   deps: ResolverDeps,
   payload: { projectKey: string },
 ): Promise<ProjectReadinessResult> {
-  const records = await deps.store.getProjectScores(payload.projectKey);
+  requireValidProjectKey(payload.projectKey);
+  const visible = await visibleProjectRecords(deps, payload.projectKey);
+  if (visible === null) {
+    // No browse permission (or visibility unprovable): the empty
+    // shape, indistinguishable from an unscored project (round 2).
+    return {
+      projectKey: payload.projectKey,
+      scored: false,
+      totalScored: 0,
+      openScored: 0,
+      averageScore: 0,
+      percentReady: 0,
+      counts: { ready: 0, almost: 0, 'not-ready': 0 },
+      scanStatus: 'unknown',
+      worstOffenders: [],
+    };
+  }
+  const records = visible;
   const settings = await deps.store.getSettings(payload.projectKey);
   // Project readiness passes the records unfiltered (war-room B20):
   // computeProjectStats applies the project's Done policy itself,
   // and pre-filtering silently overrode `donePolicy: 'include'` on
   // this surface — the Coach counted a different population than the
-  // dashboard for the same project.
+  // dashboard for the same project. (The round-2 visibility filter
+  // above is a different axis: it removes records the ASKER may not
+  // see, before any policy is applied.)
   const stats = computeProjectStats(payload.projectKey, records, settings, 5);
   const scanState = await deps.store.getScanState(payload.projectKey);
   return {
@@ -152,7 +226,10 @@ export async function fetchSuggestedFixes(
   deps: ResolverDeps,
   payload: { projectKey: string },
 ): Promise<SuggestedFixesResult> {
-  const records = await deps.store.getProjectScores(payload.projectKey);
+  requireValidProjectKey(payload.projectKey);
+  const visible = await visibleProjectRecords(deps, payload.projectKey);
+  if (visible === null) return { found: false, projectKey: payload.projectKey };
+  const records = visible;
   const settings = await deps.store.getSettings(payload.projectKey);
   // Fix-first surfaces stay open-only under BOTH Done policies
   // (pinned by the actions B9 test): nominating a Done issue as the
@@ -192,8 +269,11 @@ export interface CompareIssuesResult {
   /** Checks where the two issues differ (pass/fail), with both outcomes. */
   differences?: Array<{
     label: string;
-    aPassed: boolean;
-    bPassed: boolean;
+    /** null when the check does not apply to that issue (round 2,
+     *  F-15) — the old `?? true` reported N/A as a pass, so a Bug
+     *  missing repro steps compared equal to a Story. */
+    aPassed: boolean | null;
+    bPassed: boolean | null;
     aDetail: string;
     bDetail: string;
   }>;
@@ -238,8 +318,8 @@ export async function fetchCompareIssues(
       const either = checkA ?? checkB;
       return {
         label: either?.label ?? id,
-        aPassed: checkA?.passed ?? true,
-        bPassed: checkB?.passed ?? true,
+        aPassed: checkA ? checkA.passed : null,
+        bPassed: checkB ? checkB.passed : null,
         aDetail: checkA?.detail ?? 'This check does not apply to this issue.',
         bDetail: checkB?.detail ?? 'This check does not apply to this issue.',
       };
@@ -259,11 +339,14 @@ export async function fetchFixFirst(
   deps: ResolverDeps,
   payload: { projectKey: string; limit?: number },
 ): Promise<FixFirstResult> {
+  requireValidProjectKey(payload.projectKey);
   const limit = Math.min(
     MAX_FIX_FIRST_LIMIT,
     Math.max(1, Math.floor(payload.limit ?? DEFAULT_FIX_FIRST_LIMIT) || DEFAULT_FIX_FIRST_LIMIT),
   );
-  const records = await deps.store.getProjectScores(payload.projectKey);
+  const visible = await visibleProjectRecords(deps, payload.projectKey);
+  if (visible === null) return { projectKey: payload.projectKey, issues: [] };
+  const records = visible;
   const settings = await deps.store.getSettings(payload.projectKey);
   // Open-only under both Done policies, as in fetchSuggestedFixes.
   const stats = computeProjectStats(payload.projectKey, records.filter(isOpen), settings, limit);

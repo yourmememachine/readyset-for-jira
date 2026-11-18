@@ -18,7 +18,7 @@
  */
 import type { DraftSection } from './adf';
 import { DEFAULT_IMPROVE_SECTIONS, PLACEHOLDER_PHRASES, PLACEHOLDER_TOKENS } from './rubric-config';
-import { acceptanceCriteriaSectionBody } from './rubric';
+import { acceptanceCriteriaSectionBody, containsPlaceholder } from './rubric';
 import type { CheckResult, NormalizedIssue } from './types';
 
 const MARKER_TOKEN_RE = new RegExp(`\\b(?:${PLACEHOLDER_TOKENS.join('|')})s?\\b`, 'gi');
@@ -33,6 +33,21 @@ function cleanLine(line: string): string {
   for (const phrase of PLACEHOLDER_PHRASES) {
     cleaned = cleaned.replace(new RegExp(phrase, 'gi'), ' ');
   }
+  // Hyphenated marker (round 2, E #11): MARKER_TOKEN_RE's \b can
+  // never see "to-do", so a harvested line carrying it produced a
+  // draft that flagged ITSELF on the no-placeholders check. Strip it
+  // under the rubric's own prose rule: "to-do list" as a product noun
+  // (not all-caps, followed by more prose, no colon) is kept.
+  cleaned = cleaned.replace(/\bto-do\b/gi, (match: string, offset: number, full: string) => {
+    const after = full.slice(offset + match.length);
+    const listMatch = /^\s+list\b/i.exec(after);
+    if (listMatch) {
+      const remainder = after.slice(listMatch[0].length).trim();
+      const allCaps = match === match.toUpperCase() && match !== match.toLowerCase();
+      if (!allCaps && remainder.length > 0 && !remainder.startsWith(':')) return match;
+    }
+    return ' ';
+  });
   return cleaned.replace(/\s+/g, ' ').trim();
 }
 
@@ -84,14 +99,35 @@ function buildGoal(issue: NormalizedIssue, contextLines: string[], heading: stri
   return { heading, paragraphs };
 }
 
+/** Split one long line into word-boundary chunks of at most `cap` chars. */
+function chunkLine(line: string, cap: number): string[] {
+  const chunks: string[] = [];
+  let rest = line;
+  while (rest.length > cap) {
+    const cut = rest.lastIndexOf(' ', cap);
+    const at = cut > cap / 2 ? cut : cap;
+    chunks.push(rest.slice(0, at).trim());
+    rest = rest.slice(at).trim();
+  }
+  if (rest.length > 0) chunks.push(rest);
+  return chunks;
+}
+
 function buildContext(contextLines: string[], heading: string): DraftSection | null {
   if (contextLines.length === 0) return null;
   // Preserve the author's own words (markers stripped), grouped back
-  // into at most three paragraphs so the draft stays readable.
+  // into paragraphs so the draft stays readable. Bounded (round 2,
+  // E #11): no paragraph over ~2,000 chars and no Context over
+  // ~4,000 — the old grouping let one unbounded line (a pasted log, a
+  // minified blob) become a single giant paragraph.
+  const boundedLines = contextLines.flatMap((line) => chunkLine(line, 2000));
   const paragraphs: string[] = [];
   let buffer: string[] = [];
-  for (const line of contextLines) {
+  let total = 0;
+  for (const line of boundedLines) {
+    if (total + line.length > 4000 && paragraphs.length > 0) break;
     buffer.push(line);
+    total += line.length;
     if (buffer.join(' ').length >= 240 && paragraphs.length < 2) {
       paragraphs.push(buffer.join(' '));
       buffer = [];
@@ -140,37 +176,52 @@ function buildAcceptanceCriteria(
 }
 
 /**
- * Steps-to-reproduce section for a bug whose repro check fails
- * (war-room C3): a bug's denominator carries the extra repro check,
- * and a draft that never addresses it caps a bare bug at 55 — Improve
- * could not lift it to Almost. Built under the template's standing
- * no-invention rule: steps come from the issue's own sentences, the
- * Actual line quotes what the issue itself reports (its summary),
- * and the Expected line points at the draft's own criteria rather
- * than inventing behaviour. When the issue carries no usable text,
- * the single step is encountering the reported problem itself.
+ * Steps-to-reproduce section for a bug whose repro check fails.
+ *
+ * Round 2 (F-3) rewrote this builder on an honesty rule: the round-1
+ * version FABRICATED a passing check — it manufactured numbered
+ * "steps" from arbitrary prose sentences, an "Expected:" line
+ * pointing at the draft's own criteria, and an "Actual:" line quoting
+ * the summary, and the rubric paid out the repro weight for content
+ * the reporter never wrote. The section now contains only:
+ * - steps transcribed verbatim from step-like lines the author
+ *   actually wrote (numbered or bulleted list lines in the issue), and
+ * - Expected/Actual lines quoted verbatim when the issue itself
+ *   carries them in labelled form.
+ * When the issue has neither, the section is scaffolding that says so
+ * in confession lines ("not documented in the issue") — which the
+ * rubric's evidence test strips before measuring, so the scaffold
+ * earns NO credit. It exists to tell the reporter exactly what to
+ * add, not to pretend they added it.
  */
-function buildReproSection(issue: NormalizedIssue, contextLines: string[]): DraftSection {
-  const steps = sentencesOf(contextLines.join('\n')).slice(0, 3);
-  const summary = cleanLine(issue.summary);
+function buildReproSection(issue: NormalizedIssue): DraftSection {
+  const rawLines = issue.descriptionText.split('\n');
+  const steps: string[] = [];
+  for (const rawLine of rawLines) {
+    const item = rawLine.match(/^\s*(?:\d+[.)]|[-*•])\s+(.+)$/);
+    if (!item) continue;
+    const text = cleanLine(item[1] ?? '');
+    if (text.length >= 10 && !steps.includes(text)) steps.push(text);
+    if (steps.length >= 5) break;
+  }
   const paragraphs: string[] = [];
   if (steps.length > 0) {
     steps.forEach((step, index) => {
       paragraphs.push(`${index + 1}. ${ensureSentence(step)}`);
     });
   } else {
-    paragraphs.push(
-      summary.length > 0
-        ? `1. Encounter the problem this issue reports: "${summary}".`
-        : '1. Encounter the problem described in this issue.',
-    );
+    paragraphs.push('Reproduction steps were not documented in the issue.');
   }
-  paragraphs.push(
-    'Expected: the behaviour described in the acceptance criteria above.',
-    summary.length > 0
-      ? `Actual: ${ensureSentence(summary)} As reported in this issue.`
-      : 'Actual: the problem described in this issue, as reported.',
-  );
+  const expected = issue.descriptionText.match(/^\s*expected\s*[:\-–]\s*(.+)$/im);
+  const actual = issue.descriptionText.match(/^\s*actual\s*[:\-–]\s*(.+)$/im);
+  if (expected?.[1] && actual?.[1]) {
+    paragraphs.push(
+      `Expected: ${ensureSentence(cleanLine(expected[1]))}`,
+      `Actual: ${ensureSentence(cleanLine(actual[1]))}`,
+    );
+  } else if (steps.length === 0) {
+    paragraphs.push('The issue does not state the expected result or the actual behaviour.');
+  }
   return { heading: 'Steps to reproduce', paragraphs };
 }
 
@@ -258,9 +309,17 @@ export function buildTemplateDraft(
   // (stories never see it), it is the draft addressing a failing
   // check the configured sections cannot express.
   if (failedChecks.some((check) => check.id === 'repro-steps')) {
-    sections.push(buildReproSection(issue, contextLines));
+    sections.push(buildReproSection(issue));
   }
-  return sections;
+  // Post-build validation (round 2, E #11): no paragraph the template
+  // emits may trip the placeholder scan — a draft that flags itself
+  // teaches users the tool writes failing text. Harvested lines are
+  // marker-stripped by cleanLine, so anything caught here is dropped,
+  // never shipped.
+  return sections.map((section) => ({
+    ...section,
+    paragraphs: section.paragraphs.filter((paragraph) => !containsPlaceholder(paragraph)),
+  }));
 }
 
 /** The Acceptance criteria section of a full template draft (Wave 3 partial Improve). */
@@ -276,8 +335,6 @@ export function templateAcSection(
   // heading) — but never return undefined to a write path.
   return buildAcceptanceCriteria(issue, cleanLines(issue.descriptionText), 'Acceptance criteria');
 }
-
-const SUMMARY_PLACEHOLDER_RE = /\b(tbd|todo|fixme|placeholder)\b/i;
 
 /**
  * Derive a specific summary from the issue's own text (Wave 3 summary
@@ -317,7 +374,10 @@ export function buildSummaryFromIssue(
   }
   candidate = candidate.replace(/[.!?]+$/, '').trim();
   if (candidate.length < 10 || candidate.length > 200) return null;
-  if (SUMMARY_PLACEHOLDER_RE.test(candidate)) return null;
+  // The rubric's own placeholder scan (round 2, E #9): the private
+  // regex this replaces was narrower, so a derived summary could
+  // carry "TBC" straight into a failing no-placeholders check.
+  if (containsPlaceholder(candidate)) return null;
   if (candidate.toLowerCase() === issue.summary.trim().toLowerCase()) return null;
   return candidate.charAt(0).toUpperCase() + candidate.slice(1);
 }

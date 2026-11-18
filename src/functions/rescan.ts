@@ -15,6 +15,7 @@
  *   a run short, the tail of an alphabetical roster is not starved
  *   forever. Per-project checkpoints still resume mid-project.
  */
+import { isValidProjectKey } from '../lib/jira';
 import { scanProject, type ResolverDeps } from './resolver';
 
 export interface ScheduledRescanResult {
@@ -24,7 +25,18 @@ export interface ScheduledRescanResult {
 
 export async function handleScheduledRescan(deps: ResolverDeps): Promise<ScheduledRescanResult> {
   const known = await deps.store.getKnownProjects();
-  const roster = await rotateRoster(deps, known);
+  // Legacy roster hygiene (round 2, F-16): a key planted before
+  // validation existed is skipped and logged, never interpolated
+  // into JQL by the scan sink.
+  const valid: string[] = [];
+  for (const projectKey of known) {
+    if (isValidProjectKey(projectKey)) {
+      valid.push(projectKey);
+    } else {
+      console.error(`ReadySet: nightly rescan skipping invalid roster key "${projectKey}"`);
+    }
+  }
+  const roster = await rotateRoster(deps, valid);
   const projects: ScheduledRescanResult['projects'] = [];
   const errors: ScheduledRescanResult['errors'] = [];
   for (const projectKey of roster) {

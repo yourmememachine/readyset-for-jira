@@ -12,8 +12,15 @@ import type { CheckId, ProjectSettings } from './types';
  * `todo` needs marker context; summary tokens are deduplicated.
  * v3 (upgrade pack): bug-type issues gain the `repro-steps` check
  * (excluded from scoring for every other issue type).
+ * v4 (war-room round 2): meaningful-content tests are conjunctive;
+ * the description check gains a distinct-token floor; placeholder
+ * matching normalizes zero-width/punctuation/homoglyph evasions;
+ * repro credit requires transcribed evidence, never template
+ * scaffolding. The bump also invalidates every cached LLM draft —
+ * deliberate: drafts parsed under the old extra-section tolerance
+ * may carry sections the new parser drops.
  */
-export const RUBRIC_VERSION = '3';
+export const RUBRIC_VERSION = '4';
 
 /**
  * Rubric weights (DESIGN.md §5.3). Sum of all weights = 100. When a check

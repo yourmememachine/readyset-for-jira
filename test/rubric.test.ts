@@ -58,15 +58,38 @@ describe('description check', () => {
     'Given a valid API key, when the quota is exceeded, then the gateway returns 429.';
 
   it('passes at exactly 280 characters and fails at 279', () => {
+    // Varied vocabulary (the round-2 token floor is measured
+    // separately below): 32 distinct words cycled to length.
+    const words =
+      'alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mango november oscar papa quebec romeo sierra tango uniform victor whisky xray yankee zulu apple banana cherry dragon eagle falcon'.split(
+        ' ',
+      );
+    const varied = (length: number): string => {
+      let out = '';
+      for (let i = 0; out.length < length; i += 1) {
+        out = out ? `${out} ${words[i % words.length]}` : (words[i % words.length] as string);
+      }
+      const sliced = out.slice(0, length);
+      return sliced.endsWith(' ') ? `${sliced.slice(0, -1)}x` : sliced;
+    };
     const at = scoreIssue(
-      makeIssue({ descriptionText: 'x'.repeat(280), acceptanceCriteriaText: AC_FIELD }),
+      makeIssue({ descriptionText: varied(280), acceptanceCriteriaText: AC_FIELD }),
     );
     expect(check(at, 'description').passed).toBe(true);
     const below = scoreIssue(
-      makeIssue({ descriptionText: 'x'.repeat(279), acceptanceCriteriaText: AC_FIELD }),
+      makeIssue({ descriptionText: varied(279), acceptanceCriteriaText: AC_FIELD }),
     );
     expect(check(below, 'description').passed).toBe(false);
     expect(below.score).toBe(80);
+  });
+
+  it('round 2 (E #8): 280 characters of one repeated token fail the distinct-token floor', () => {
+    const padded = scoreIssue(
+      makeIssue({ descriptionText: 'x'.repeat(280), acceptanceCriteriaText: AC_FIELD }),
+    );
+    const description = check(padded, 'description');
+    expect(description.passed).toBe(false);
+    expect(description.detail).toMatch(/distinct words/);
   });
 
   it('ignores surrounding whitespace when measuring length', () => {
