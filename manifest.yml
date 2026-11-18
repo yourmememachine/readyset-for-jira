@@ -1,13 +1,18 @@
-# ReadySet for Jira — Forge manifest (phase 1)
+# ReadySet for Jira — Forge manifest
 #
 # Phase 1 modules: issue readiness panel, project dashboard, issue-event
-# rescoring, nightly scheduled rescan. Phase 2 adds the Forge LLM improver,
-# Rovo agent + actions (see ../DESIGN.md §5.3).
+# rescoring, nightly scheduled rescan. Phase 2a adds the Improve flow
+# (Forge LLM drafting + Apply), the ReadySet Coach `rovo:agent` with
+# its three GET actions, and the `llm` enablement (see ../DESIGN.md
+# §5.3 items 4–5). The agent/action/llm manifest shapes follow the
+# Forge manifest reference; `forge lint` in phase 2b is their schema
+# validation, exactly as it is for the phase-1 modules.
 #
-# NOTE: `app.id` is a placeholder. `forge register` (phase 2) assigns the
-# real app id before the first deploy. The manifest intentionally contains
-# no `license:` key — link sharing is disabled on licensed apps, and the
-# installation link is this entry's distribution path (DESIGN.md §1).
+# NOTE: `app.id` is a placeholder. `forge register` (phase 2b) assigns
+# the real app id before the first deploy. The manifest intentionally
+# contains no `license:` key — link sharing is disabled on licensed
+# apps, and the installation link is this entry's distribution path
+# (DESIGN.md §1).
 modules:
   jira:issueContext:
     - key: readyset-issue-panel
@@ -44,20 +49,97 @@ modules:
       handler: index.eventHandler
     - key: scheduled-handler
       handler: index.scheduledHandler
+    - key: action-issue-readiness
+      handler: index.fetchIssueReadinessAction
+    - key: action-project-readiness
+      handler: index.fetchProjectReadinessAction
+    - key: action-fix-first
+      handler: index.fetchFixFirstAction
+  # ReadySet Coach actions: GET-only, read from stored scores. Agents
+  # triggered by automation rules never call write-verb actions, and
+  # the Coach is read-only by design (DESIGN.md §1, §5.3 item 5).
+  action:
+    - key: fetch-issue-readiness
+      name: Fetch issue readiness
+      description: >-
+        Returns the ReadySet readiness score for one Jira issue, with
+        the per-check explanation of what passed, what failed, and the
+        one-line fix for each failing check. Answers from stored
+        scores only.
+      actionVerb: GET
+      function: action-issue-readiness
+      inputs:
+        issueKey:
+          type: string
+          required: true
+          description: The Jira issue key, for example ABC-123.
+    - key: fetch-project-readiness
+      name: Fetch project readiness
+      description: >-
+        Returns the ReadySet readiness summary for one Jira project:
+        average score, share of Ready issues, grade counts, scan
+        status, and the five lowest-scoring open issues.
+      actionVerb: GET
+      function: action-project-readiness
+      inputs:
+        projectKey:
+          type: string
+          required: true
+          description: The Jira project key, for example ABC.
+    - key: fetch-fix-first
+      name: Fetch fix-first list
+      description: >-
+        Returns a project's lowest-scoring open issues, worst first,
+        each with its highest-weight failing readiness checks and
+        their one-line fixes — the order a team should fix them in.
+      actionVerb: GET
+      function: action-fix-first
+      inputs:
+        projectKey:
+          type: string
+          required: true
+          description: The Jira project key, for example ABC.
+        limit:
+          type: number
+          required: false
+          description: How many issues to return (default 5, maximum 25).
+  rovo:agent:
+    - key: readyset-coach
+      name: ReadySet Coach
+      description: >-
+        Sprint-readiness coach for Jira. Answers how ready an issue or
+        a project is for its sprint and what to fix first, grounded in
+        ReadySet's deterministic readiness scores.
+      prompt:
+        resource: agent-prompt
+      actions:
+        - fetch-issue-readiness
+        - fetch-project-readiness
+        - fetch-fix-first
+      conversationStarters:
+        - How ready is this issue for the sprint?
+        - Which issues in my project are not ready yet?
+        - What should I fix first before sprint planning?
+  # Forge LLMs enablement for the Improve drafting (Haiku tier).
+  llm:
+    - models:
+        - claude-haiku-4-5
 resources:
   - key: issue-panel
     path: src/frontend/issue-context.tsx
   - key: project-page
     path: src/frontend/project-page.tsx
+  - key: agent-prompt
+    path: static/agent/prompt.md
 app:
   id: ari:cloud:ecosystem::app/00000000-0000-4000-8000-000000000000
   runtime:
     name: nodejs22.x
   # storage:app covers Forge KVS; read:jira-work covers the Jira REST
-  # reads. The app performs no Jira writes in phase 1 — the write scope
-  # was dropped in cross-review B17 and returns with the phase-2 Apply
-  # flow that actually uses it.
+  # reads; write:jira-work returned in phase 2a with the Improve Apply
+  # flow — the app's only Jira writes (description replace + comment).
   permissions:
     scopes:
       - read:jira-work
+      - write:jira-work
       - storage:app

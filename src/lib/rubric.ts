@@ -91,8 +91,12 @@ function hasMeaningfulContent(text: string): boolean {
  * as a heading (start of a line, optional markdown hashes / trailing
  * colon) — a bare mention mid-sentence is not a section
  * (cross-review A5). The body runs until the next heading line.
+ *
+ * Exported for the Improve template (phase 2a), which reuses this
+ * exact definition when harvesting criteria the author already wrote
+ * — one definition of "the AC section", owned by the rubric.
  */
-function acceptanceCriteriaSectionBody(descriptionText: string): string | null {
+export function acceptanceCriteriaSectionBody(descriptionText: string): string | null {
   const lines = descriptionText.split('\n');
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i] ?? '';

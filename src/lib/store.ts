@@ -17,6 +17,11 @@
  *   fieldmap                → the site's resolved JiraFieldMap (B8)
  *   rescan-roster           → { lastCompletedProject } rotation cursor
  *                             for the nightly rescan (cross-review A18)
+ *   draft:{issueKey}:{hash} → ImprovementDraft (phase 2a): an Improve
+ *                             draft cached by the content hash it was
+ *                             generated from (DESIGN.md §5.2), so a
+ *                             repeat Improve on unchanged content is
+ *                             free and Apply can verify freshness.
  *
  * Enumeration uses prefix listing (`list`), which on Forge KVS is
  * eventually consistent: a just-written membership marker can briefly
@@ -32,7 +37,7 @@
  */
 import { DEFAULT_SETTINGS } from './rubric-config';
 import type { JiraFieldMap } from './jira';
-import type { ProjectSettings, StoredScore } from './types';
+import type { ImprovementDraft, ProjectSettings, StoredScore } from './types';
 
 export interface KeyValueStore {
   get<T>(key: string): Promise<T | undefined>;
@@ -97,6 +102,8 @@ export const projectMarkerKey = (projectKey: string): string => `proj:${projectK
 export const PROJECTS_PREFIX = 'proj:';
 export const FIELDMAP_KEY = 'fieldmap';
 export const ROSTER_KEY = 'rescan-roster';
+export const draftKey = (issueKey: string, contentHash: string): string =>
+  `draft:${issueKey}:${contentHash}`;
 
 export interface RescanCheckpoint {
   /** Opaque Jira `nextPageToken`; null means "start from the first page". */
@@ -261,5 +268,13 @@ export class ScoreStore {
 
   async setRosterCheckpoint(checkpoint: RosterCheckpoint): Promise<void> {
     await this.kv.set(ROSTER_KEY, checkpoint);
+  }
+
+  async getDraft(issueKey: string, contentHash: string): Promise<ImprovementDraft | undefined> {
+    return this.kv.get<ImprovementDraft>(draftKey(issueKey, contentHash));
+  }
+
+  async saveDraft(draft: ImprovementDraft): Promise<void> {
+    await this.kv.set(draftKey(draft.issueKey, draft.contentHash), draft);
   }
 }

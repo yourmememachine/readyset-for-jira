@@ -12,10 +12,15 @@
  * - the trigger subscribes to the deleted-issue event (B9)
  * - `app.id` is present (placeholder until `forge register`, B3)
  * - there is NO `license:` key (link sharing is the distribution path)
- * - the unused write:jira-work scope is absent (B17)
+ * - write:jira-work is present (phase 2a: the Improve Apply flow's
+ *   writes use it — in phase 1 its ABSENCE was pinned by B17, when
+ *   nothing wrote to Jira)
+ * - phase 2a modules: the `llm` enablement names the Haiku tier; the
+ *   three Coach actions exist and are GET; `rovo:agent` wires exactly
+ *   those actions and the agent-prompt resource, which is declared.
  *
  * This is a text-level check, not a YAML parse — the manifest is small
- * and hand-maintained; `forge lint` (phase 2) remains the real schema
+ * and hand-maintained; `forge lint` (phase 2b) remains the real schema
  * validation.
  */
 import { readFileSync } from 'node:fs';
@@ -58,9 +63,37 @@ const codeOnly = text
   .filter((line) => !line.trimStart().startsWith('#'))
   .join('\n');
 check(
-  !codeOnly.includes('write:jira-work'),
-  'write:jira-work scope present but unused in phase 1 (B17)',
+  codeOnly.includes('write:jira-work'),
+  'write:jira-work scope missing but the phase-2a Apply flow writes to Jira',
 );
+
+const ACTION_KEYS = ['fetch-issue-readiness', 'fetch-project-readiness', 'fetch-fix-first'];
+const actionBlock = moduleBlock('action');
+for (const key of ACTION_KEYS) {
+  check(actionBlock.includes(`key: ${key}`), `action module is missing ${key}`);
+}
+const getVerbs = actionBlock.match(/actionVerb:\s*GET/g) ?? [];
+check(
+  getVerbs.length === ACTION_KEYS.length,
+  `Coach actions must all be actionVerb: GET (found ${getVerbs.length})`,
+);
+
+const agentBlock = moduleBlock('rovo:agent');
+check(agentBlock.includes('key: readyset-coach'), 'rovo:agent readyset-coach is missing');
+for (const key of ACTION_KEYS) {
+  check(agentBlock.includes(`- ${key}`), `rovo:agent does not wire action ${key}`);
+}
+check(
+  agentBlock.includes('resource: agent-prompt'),
+  'rovo:agent does not use the agent-prompt resource',
+);
+check(
+  text.includes('key: agent-prompt') && text.includes('path: static/agent/prompt.md'),
+  'agent-prompt resource (static/agent/prompt.md) is not declared',
+);
+
+const llmBlock = moduleBlock('llm');
+check(/haiku/i.test(llmBlock), 'llm module does not enable the Haiku tier');
 
 if (failures.length > 0) {
   console.error('manifest check FAILED:');

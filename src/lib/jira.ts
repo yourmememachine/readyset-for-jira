@@ -9,7 +9,7 @@
  * The production adapter (`forge-jira.ts`) is the only file that calls
  * `requestJira`.
  */
-import { extractTextFromAdf } from './adf';
+import { extractTextFromAdf, type AdfDoc } from './adf';
 import type { NormalizedIssue } from './types';
 
 /** Subset of the Jira REST v3 issue payload that ReadySet reads. */
@@ -85,6 +85,16 @@ export interface JiraAdapter {
    * `asUser`). Used to gate project settings (cross-review B13).
    */
   hasProjectPermission(projectKey: string, permission: string): Promise<boolean>;
+  /**
+   * Replace an issue's description with the given ADF document
+   * (phase-2a Improve → Apply). The only description write in the app.
+   */
+  updateDescription(issueKey: string, description: AdfDoc): Promise<void>;
+  /**
+   * Post a comment (ADF body) on an issue. Used by Apply to leave the
+   * "improved with ReadySet — readiness X → Y" audit trail.
+   */
+  addComment(issueKey: string, body: AdfDoc): Promise<void>;
 }
 
 /**
@@ -229,6 +239,8 @@ export class FakeJiraAdapter implements JiraAdapter {
   readonly getIssueCalls: string[] = [];
   readonly searchCalls: Array<{ jql: string; pageToken: string | null; maxResults: number }> = [];
   readonly listFieldsCalls: number[] = [];
+  readonly updateDescriptionCalls: Array<{ issueKey: string; description: AdfDoc }> = [];
+  readonly addCommentCalls: Array<{ issueKey: string; body: AdfDoc }> = [];
   /** Projects the "current user" administers; empty = all projects. */
   adminProjects: ReadonlySet<string> | null = null;
 
@@ -277,5 +289,21 @@ export class FakeJiraAdapter implements JiraAdapter {
 
   async hasProjectPermission(projectKey: string): Promise<boolean> {
     return this.adminProjects === null || this.adminProjects.has(projectKey);
+  }
+
+  async updateDescription(issueKey: string, description: AdfDoc): Promise<void> {
+    this.updateDescriptionCalls.push({ issueKey, description: structuredClone(description) });
+    const issue = this.issues.find((candidate) => candidate.key === issueKey);
+    if (!issue) throw new Error(`FakeJiraAdapter: unknown issue ${issueKey}`);
+    // Mutate the held payload so a later getIssue returns the new
+    // description — the Apply flow rescores from exactly that re-read.
+    issue.fields.description = structuredClone(description);
+  }
+
+  async addComment(issueKey: string, body: AdfDoc): Promise<void> {
+    this.addCommentCalls.push({ issueKey, body: structuredClone(body) });
+    if (!this.issues.some((candidate) => candidate.key === issueKey)) {
+      throw new Error(`FakeJiraAdapter: unknown issue ${issueKey}`);
+    }
   }
 }

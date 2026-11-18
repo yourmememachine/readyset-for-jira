@@ -12,10 +12,17 @@
  */
 import Resolver from '@forge/resolver';
 import { ForgeJiraAdapter } from './lib/forge-jira';
+import { ForgeLlmClient } from './lib/forge-llm';
 import { ForgeKV } from './lib/forge-store';
 import { ScoreStore } from './lib/store';
 import type { ProjectSettings } from './lib/types';
+import {
+  fetchFixFirst,
+  fetchIssueReadiness,
+  fetchProjectReadiness,
+} from './functions/actions';
 import { handleIssueEvent, type JiraIssueEvent } from './functions/events';
+import { applyImprovement, improveIssue, type ImproverDeps } from './functions/improver';
 import { handleScheduledRescan } from './functions/rescan';
 import {
   continueScanProject,
@@ -38,6 +45,11 @@ const uiDeps: ResolverDeps = {
 const backgroundDeps: ResolverDeps = {
   jira: new ForgeJiraAdapter('app'),
   store,
+};
+
+const improverDeps: ImproverDeps = {
+  ...uiDeps,
+  llm: new ForgeLlmClient(),
 };
 
 const resolver = new Resolver();
@@ -75,7 +87,36 @@ resolver.define(
     saveSettings(uiDeps, request.payload),
 );
 
+resolver.define(
+  'improveIssue',
+  async (request: { payload: { issueKey: string } }) =>
+    improveIssue(improverDeps, request.payload),
+);
+
+resolver.define(
+  'applyImprovement',
+  async (request: { payload: { issueKey: string; contentHash: string } }) =>
+    applyImprovement(improverDeps, request.payload),
+);
+
 export const handler = resolver.getDefinitions();
+
+/**
+ * Rovo action entry points (manifest `action` modules → ReadySet
+ * Coach). Actions run without a viewing-user context, so they use
+ * the app deps; they only ever read stored scores (functions/actions).
+ */
+export async function fetchIssueReadinessAction(payload: { issueKey: string }) {
+  return fetchIssueReadiness(backgroundDeps, payload);
+}
+
+export async function fetchProjectReadinessAction(payload: { projectKey: string }) {
+  return fetchProjectReadiness(backgroundDeps, payload);
+}
+
+export async function fetchFixFirstAction(payload: { projectKey: string; limit?: number }) {
+  return fetchFixFirst(backgroundDeps, payload);
+}
 
 /** Trigger entry point: issue created/updated/deleted events. */
 export async function eventHandler(event: JiraIssueEvent): Promise<void> {

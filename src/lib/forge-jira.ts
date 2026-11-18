@@ -10,11 +10,13 @@
  *   never surface issues the viewing user is not allowed to see in
  *   Jira itself (issue-level security).
  *
- * Scopes: read:jira-work, storage:app. (write:jira-work was dropped in
- * cross-review B17 — nothing writes to Jira until the phase-2 Improve
- * Apply flow, which will re-add it with the build that uses it.)
+ * Scopes: read:jira-work, write:jira-work, storage:app. The write
+ * scope returned in phase 2a with the Improve Apply flow — the only
+ * Jira writes in the app (description replace + improvement comment),
+ * both below.
  */
 import api, { route } from '@forge/api';
+import type { AdfDoc } from './adf';
 import type { JiraAdapter, JiraFieldInfo, JiraFieldMap, RawJiraIssue, SearchPage } from './jira';
 import { DEFAULT_FIELD_MAP, InvalidPageTokenError } from './jira';
 
@@ -61,6 +63,14 @@ async function readJson<T>(response: RestResponse, what: string): Promise<T> {
     throw new Error(`ReadySet: ${what} failed with HTTP ${response.status}`);
   }
   return (await response.json()) as T;
+}
+
+/** Assert a write succeeded; write endpoints return little or no body. */
+async function assertOk(response: RestResponse, what: string): Promise<void> {
+  if (response.ok) return;
+  const body = await response.text().catch(() => '');
+  console.error(`ReadySet: ${what} failed with HTTP ${response.status}: ${body.slice(0, 500)}`);
+  throw new Error(`ReadySet: ${what} failed with HTTP ${response.status}`);
 }
 
 export class ForgeJiraAdapter implements JiraAdapter {
@@ -143,5 +153,34 @@ export class ForgeJiraAdapter implements JiraAdapter {
       permissions?: Record<string, { havePermission?: boolean }>;
     }>(response, 'hasProjectPermission');
     return result.permissions?.[permission]?.havePermission === true;
+  }
+
+  async updateDescription(issueKey: string, description: AdfDoc): Promise<void> {
+    // PUT /rest/api/3/issue/{key} with a fields payload; 204 on success.
+    // notifyUsers=false: an automated rewrite must not spam watchers —
+    // the improvement comment is the visible audit trail.
+    const query = new URLSearchParams({ notifyUsers: 'false' });
+    const response = await this.requester().requestJira(
+      route`/rest/api/3/issue/${issueKey}?${query}`,
+      {
+        method: 'PUT',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fields: { description } }),
+      },
+    );
+    await assertOk(response, `updateDescription(${issueKey})`);
+  }
+
+  async addComment(issueKey: string, body: AdfDoc): Promise<void> {
+    // POST /rest/api/3/issue/{key}/comment with an ADF body; 201 on success.
+    const response = await this.requester().requestJira(
+      route`/rest/api/3/issue/${issueKey}/comment`,
+      {
+        method: 'POST',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ body }),
+      },
+    );
+    await assertOk(response, `addComment(${issueKey})`);
   }
 }

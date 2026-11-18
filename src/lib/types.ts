@@ -134,3 +134,33 @@ export interface ProjectStats {
   /** Lowest-scoring open issues, worst first, capped by the caller. */
   worstOffenders: StoredScore[];
 }
+
+/** Where an improvement draft came from (phase 2a). */
+export type DraftSource = 'llm' | 'template';
+
+/**
+ * One improvement draft for an issue, cached in KVS under
+ * `draft:{issueKey}:{contentHash}` (DESIGN.md §5.2). The sections are
+ * the structured form the Apply flow turns into ADF via
+ * `buildAdfFromSections` — the draft is stored structured, never as
+ * pre-built ADF, so the panel can render it for review first.
+ */
+export interface ImprovementDraft {
+  issueKey: string;
+  projectKey: string;
+  /**
+   * Hash of everything the draft was generated from (summary,
+   * description text, dedicated AC text, the failed check ids, the
+   * rubric version). If the issue changes, the hash changes and the
+   * cached draft no longer applies — Apply re-checks it before
+   * writing, so a stale draft can never overwrite newer edits.
+   */
+  contentHash: string;
+  source: DraftSource;
+  /** Section headings + paragraphs (see `lib/adf.ts` DraftSection). */
+  sections: Array<{ heading: string; paragraphs: string[] }>;
+  /** The issue's score when the draft was generated. */
+  scoreAtDraft: number;
+  /** ISO timestamp of generation. */
+  generatedAt: string;
+}
