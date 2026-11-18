@@ -40,6 +40,7 @@ export function buildDraftPrompt(request: DraftRequest): { system: string; user:
     ...DRAFT_HEADINGS.map((heading) => `## ${heading}`),
     'Rules:',
     '- Use ONLY facts present in the issue text you are given. Never invent names, dates, metrics, systems, or requirements.',
+    '- If the issue gives you too few facts for a full description, still return the complete section structure: state plainly in Context what the issue does not specify, and write Acceptance criteria for verifying the work once it is specified. Never refuse, never ask questions back, and never write anything outside the section structure.',
     '- Acceptance criteria must be testable statements, one per line, each starting with "- ".',
     '- Never write TBD, TODO, or any placeholder marker.',
     '- Keep the whole reply under 600 tokens. Plain paragraphs, no code fences.',
@@ -68,8 +69,12 @@ export function buildDraftPrompt(request: DraftRequest): { system: string; user:
  * bullet lines become their own paragraphs (the ADF builder renders
  * paragraphs — list fidelity is a presentation detail, content is
  * what the rubric scores). Throws when the reply carries no usable
- * content, so the caller falls back to the template instead of
- * offering an empty or garbage draft.
+ * content OR ignores the section contract (no Acceptance criteria
+ * section), so the caller falls back to the template instead of
+ * offering an empty or garbage draft. The contract check matters: a
+ * model that "refuses" a fact-free issue replies in plain prose with
+ * no headings at all, and a length check alone would happily offer
+ * that refusal as the draft (phase 2b, live on RS-9).
  */
 export function parseDraftMarkdown(markdown: string): DraftSection[] {
   const sections: DraftSection[] = [];
@@ -126,6 +131,14 @@ export function parseDraftMarkdown(markdown: string): DraftSection[] {
   );
   if (sections.length === 0 || totalChars < 40) {
     throw new Error('ReadySet: LLM draft reply had no usable content');
+  }
+  const hasAcceptanceCriteria = sections.some(
+    (section) =>
+      section.heading.trim().toLowerCase() === 'acceptance criteria' &&
+      section.paragraphs.length > 0,
+  );
+  if (!hasAcceptanceCriteria) {
+    throw new Error('ReadySet: LLM draft reply ignored the section contract');
   }
   return sections;
 }

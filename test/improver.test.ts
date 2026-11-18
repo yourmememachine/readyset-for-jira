@@ -224,6 +224,20 @@ describe('improveIssue', () => {
     const result = await improveIssue(deps, { issueKey: 'RS-3' });
     expect(result.source).toBe('template');
   });
+
+  it('falls back to the template when the LLM refuses a fact-free issue', async () => {
+    // Live RS-9 (phase 2b): the model answered a fact-free issue with
+    // a prose refusal instead of the section structure. The refusal
+    // must never be offered — let alone applied — as a description.
+    const llm = new FakeLlmClient(
+      () =>
+        'I cannot rewrite this issue because the current description is empty and contains no facts about what bug needs to be fixed, what system is affected, or how to verify it is resolved.\n\nTo proceed, I need you to provide:\nWhat is the bug? (What is broken or not working as expected?)',
+    );
+    const { deps } = makeImproverDeps([makeRawMessyIssue()], llm);
+    const result = await improveIssue(deps, { issueKey: 'RS-3' });
+    expect(result.source).toBe('template');
+    expect(result.projectedScore).toBe(60);
+  });
 });
 
 describe('applyImprovement', () => {
