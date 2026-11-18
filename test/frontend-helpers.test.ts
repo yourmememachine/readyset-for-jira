@@ -1,4 +1,20 @@
 import { describe, expect, it } from 'vitest';
+import type { ApplyPayload, ImprovePayload } from '../src/functions/improver';
+import {
+  applyFailed,
+  applyLoaded,
+  beginApply,
+  beginDraft,
+  discardDraft,
+  draftFailed,
+  draftLoaded,
+  draftSourceLabel,
+  formatScoreChange,
+  initialImproveState,
+  isStaleDraftError,
+  toImproveMessage,
+  type ImproveFlowState,
+} from '../src/lib/improve-flow';
 import { parseThresholdInput } from '../src/lib/threshold-input';
 import { toUserMessage } from '../src/lib/user-error';
 
@@ -37,5 +53,142 @@ describe('toUserMessage (B14)', () => {
   it('falls back to a generic sentence for unknown errors', () => {
     expect(toUserMessage(new Error('boom'))).toMatch(/Something went wrong/);
     expect(toUserMessage('string failure')).toMatch(/Something went wrong/);
+  });
+});
+
+const DRAFT: ImprovePayload = {
+  issueKey: 'RS-1',
+  contentHash: 'hash-1',
+  source: 'llm',
+  fromCache: false,
+  sections: [{ heading: 'Goal', paragraphs: ['Ship it.'] }],
+  currentScore: 20,
+  projectedScore: 60,
+};
+
+const APPLIED: ApplyPayload = {
+  issueKey: 'RS-1',
+  previousScore: 20,
+  newScore: 60,
+  source: 'llm',
+};
+
+function reviewState(): ImproveFlowState {
+  return draftLoaded(beginDraft(initialImproveState), DRAFT);
+}
+
+describe('improve flow state transitions', () => {
+  it('walks idle → drafting → review → applying → applied', () => {
+    const drafting = beginDraft(initialImproveState);
+    expect(drafting.phase).toBe('drafting');
+
+    const review = draftLoaded(drafting, DRAFT);
+    expect(review.phase).toBe('review');
+    expect(review.draft).toBe(DRAFT);
+
+    const applying = beginApply(review);
+    expect(applying.phase).toBe('applying');
+    expect(applying.draft).toBe(DRAFT);
+
+    const applied = applyLoaded(applying, APPLIED);
+    expect(applied.phase).toBe('applied');
+    expect(applied.applied).toBe(APPLIED);
+    expect(applied.draft).toBeNull();
+  });
+
+  it('discards a draft from review back to idle', () => {
+    expect(discardDraft(reviewState())).toEqual(initialImproveState);
+  });
+
+  it('ignores transitions from the wrong phase', () => {
+    // No draft is in flight yet: Apply and draft-arrival are no-ops.
+    expect(beginApply(initialImproveState)).toBe(initialImproveState);
+    expect(draftLoaded(initialImproveState, DRAFT)).toBe(initialImproveState);
+    // A second Improve click while drafting does not restart the flow.
+    const drafting = beginDraft(initialImproveState);
+    expect(beginDraft(drafting)).toBe(drafting);
+    // Discard is not offered while a draft is being generated.
+    expect(discardDraft(drafting)).toBe(drafting);
+  });
+
+  it('can improve again from the applied and error phases', () => {
+    const applied = applyLoaded(beginApply(reviewState()), APPLIED);
+    expect(beginDraft(applied).phase).toBe('drafting');
+
+    const failed = draftFailed(beginDraft(initialImproveState), new Error('boom'));
+    expect(failed.phase).toBe('error');
+    expect(beginDraft(failed).phase).toBe('drafting');
+    expect(discardDraft(failed)).toEqual(initialImproveState);
+  });
+
+  it('a failed draft lands in the error phase with a mapped message', () => {
+    const failed = draftFailed(beginDraft(initialImproveState), new Error('HTTP 429'));
+    expect(failed.phase).toBe('error');
+    expect(failed.draft).toBeNull();
+    expect(failed.message).toMatch(/rate-limiting/);
+  });
+});
+
+describe('improve flow apply failures', () => {
+  const STALE = new Error(
+    'This issue changed since the draft was generated. Run Improve again to refresh the draft.',
+  );
+  const MISSING = new Error('The draft for this issue is no longer available. Run Improve again.');
+
+  it('recognises both stale-draft refusals', () => {
+    expect(isStaleDraftError(STALE)).toBe(true);
+    expect(isStaleDraftError(MISSING)).toBe(true);
+    expect(isStaleDraftError(new Error('HTTP 500'))).toBe(false);
+  });
+
+  it('a stale refusal clears the draft and lands in the error phase', () => {
+    const failed = applyFailed(beginApply(reviewState()), STALE);
+    expect(failed.phase).toBe('error');
+    expect(failed.draft).toBeNull();
+    expect(failed.message).toMatch(/changed since the draft was created/);
+  });
+
+  it('a transient failure returns to review with the draft intact for a retry', () => {
+    const failed = applyFailed(beginApply(reviewState()), new Error('HTTP 429'));
+    expect(failed.phase).toBe('review');
+    expect(failed.draft).toBe(DRAFT);
+    expect(failed.message).toMatch(/rate-limiting/);
+  });
+});
+
+describe('toImproveMessage', () => {
+  it('rewrites the stale-draft refusals as instructions', () => {
+    expect(
+      toImproveMessage(new Error('This issue changed since the draft was generated.')),
+    ).toMatch(/Run Improve again/);
+    expect(toImproveMessage(new Error('The draft for this issue is no longer available.'))).toMatch(
+      /no longer available/,
+    );
+  });
+
+  it('delegates HTTP failures to the shared resolver mapping', () => {
+    expect(toImproveMessage(new Error('ReadySet: update failed with HTTP 403'))).toMatch(
+      /permission/,
+    );
+    expect(toImproveMessage(new Error('HTTP 404'))).toMatch(/could not find/);
+  });
+
+  it('uses an Improve-specific fallback instead of the data-loading one', () => {
+    const message = toImproveMessage(new Error('boom'));
+    expect(message).toMatch(/Something went wrong with Improve/);
+    expect(message).not.toMatch(/loading ReadySet data/);
+  });
+});
+
+describe('improve flow display helpers', () => {
+  it('formats the projected score change with its delta', () => {
+    expect(formatScoreChange(20, 60)).toBe('20 → 60 (+40)');
+    expect(formatScoreChange(60, 40)).toBe('60 → 40 (-20)');
+    expect(formatScoreChange(50, 50)).toBe('50 → 50 (no change)');
+  });
+
+  it('labels where the draft came from', () => {
+    expect(draftSourceLabel('llm')).toMatch(/AI-drafted/);
+    expect(draftSourceLabel('template')).toMatch(/Template draft/);
   });
 });
