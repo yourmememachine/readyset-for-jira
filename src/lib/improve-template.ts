@@ -17,7 +17,7 @@
  * the very check it exists to fix).
  */
 import type { DraftSection } from './adf';
-import { PLACEHOLDER_PHRASES, PLACEHOLDER_TOKENS } from './rubric-config';
+import { DEFAULT_IMPROVE_SECTIONS, PLACEHOLDER_PHRASES, PLACEHOLDER_TOKENS } from './rubric-config';
 import { acceptanceCriteriaSectionBody } from './rubric';
 import type { CheckResult, NormalizedIssue } from './types';
 
@@ -67,7 +67,7 @@ function sentencesOf(text: string): string[] {
   return sentences;
 }
 
-function buildGoal(issue: NormalizedIssue, contextLines: string[]): DraftSection {
+function buildGoal(issue: NormalizedIssue, contextLines: string[], heading: string): DraftSection {
   const paragraphs: string[] = [];
   const summary = cleanLine(issue.summary);
   if (isMeaningful(summary)) {
@@ -80,10 +80,10 @@ function buildGoal(issue: NormalizedIssue, contextLines: string[]): DraftSection
     'This work is complete when every acceptance criterion below is verified ' +
       'and the definition of done at the end of this description is satisfied.',
   );
-  return { heading: 'Goal', paragraphs };
+  return { heading, paragraphs };
 }
 
-function buildContext(contextLines: string[]): DraftSection | null {
+function buildContext(contextLines: string[], heading: string): DraftSection | null {
   if (contextLines.length === 0) return null;
   // Preserve the author's own words (markers stripped), grouped back
   // into at most three paragraphs so the draft stays readable.
@@ -97,12 +97,13 @@ function buildContext(contextLines: string[]): DraftSection | null {
     }
   }
   if (buffer.length > 0) paragraphs.push(buffer.join(' '));
-  return { heading: 'Context', paragraphs };
+  return { heading, paragraphs };
 }
 
 function buildAcceptanceCriteria(
   issue: NormalizedIssue,
   contextLines: string[],
+  heading: string,
 ): DraftSection {
   let criteria: string[] = [];
   const fieldText = issue.acceptanceCriteriaText ?? '';
@@ -132,12 +133,12 @@ function buildAcceptanceCriteria(
     ];
   }
   return {
-    heading: 'Acceptance criteria',
+    heading,
     paragraphs: criteria.slice(0, 5).map(ensureSentence),
   };
 }
 
-function buildDefinitionOfDone(failedChecks: CheckResult[]): DraftSection {
+function buildDefinitionOfDone(failedChecks: CheckResult[], heading: string): DraftSection {
   const failed = new Set(failedChecks.map((check) => check.id));
   const paragraphs = [
     "The change is reviewed and merged following the team's review process.",
@@ -149,17 +150,25 @@ function buildDefinitionOfDone(failedChecks: CheckResult[]): DraftSection {
   if (failed.has('no-placeholders')) {
     paragraphs.push('No unresolved markers remain anywhere in the summary or description.');
   }
-  return { heading: 'Definition of done', paragraphs };
+  return { heading, paragraphs };
 }
 
 /**
  * Build the fallback draft for an issue from its failed checks.
  * Pure and deterministic — the improver calls this when the LLM path
  * throws, and tests pin its exact shape.
+ *
+ * Wave 2: the section structure comes from project settings. Content
+ * blocks map onto the requested headings by name (goal / context /
+ * acceptance criteria); the first otherwise-unmatched heading (e.g.
+ * "Definition of done", "Notes", or a custom closing section) takes
+ * the definition-of-done content, and any further unmatched headings
+ * are skipped — the template never invents content to fill a name.
  */
 export function buildTemplateDraft(
   issue: NormalizedIssue,
   failedChecks: CheckResult[],
+  sectionNames: readonly string[] = DEFAULT_IMPROVE_SECTIONS,
 ): DraftSection[] {
   // When the author already wrote an AC section, its lines belong to
   // the criteria section of the draft — keeping them out of Context
@@ -169,10 +178,44 @@ export function buildTemplateDraft(
   const contextLines = cleanLines(issue.descriptionText).filter(
     (line) => isMeaningful(line) && !sectionLines.has(line),
   );
-  const sections: DraftSection[] = [buildGoal(issue, contextLines)];
-  const context = buildContext(contextLines);
-  if (context) sections.push(context);
-  sections.push(buildAcceptanceCriteria(issue, contextLines));
-  sections.push(buildDefinitionOfDone(failedChecks));
+  // Two passes: headings that name a canonical block claim it; the
+  // first unclaimed heading then takes the goal content (a structure
+  // like ["Why", ..., "Wrap-up"] still opens with the goal), and the
+  // next unclaimed one takes the definition of done. Anything beyond
+  // that is skipped — the template never invents content for a name.
+  const claimed = new Map<string, 'goal' | 'context' | 'criteria' | 'done'>();
+  let goalClaimed = false;
+  let doneClaimed = false;
+  for (const name of sectionNames) {
+    if (/acceptance criteria/i.test(name)) claimed.set(name, 'criteria');
+    else if (/goal|objective|purpose/i.test(name)) {
+      claimed.set(name, 'goal');
+      goalClaimed = true;
+    } else if (/context|background/i.test(name)) claimed.set(name, 'context');
+  }
+  for (const name of sectionNames) {
+    if (claimed.has(name)) continue;
+    if (!goalClaimed) {
+      claimed.set(name, 'goal');
+      goalClaimed = true;
+    } else if (!doneClaimed) {
+      claimed.set(name, 'done');
+      doneClaimed = true;
+    }
+  }
+  const sections: DraftSection[] = [];
+  for (const name of sectionNames) {
+    const kind = claimed.get(name);
+    if (kind === 'criteria') {
+      sections.push(buildAcceptanceCriteria(issue, contextLines, name));
+    } else if (kind === 'goal') {
+      sections.push(buildGoal(issue, contextLines, name));
+    } else if (kind === 'context') {
+      const context = buildContext(contextLines, name);
+      if (context) sections.push(context);
+    } else if (kind === 'done') {
+      sections.push(buildDefinitionOfDone(failedChecks, name));
+    }
+  }
   return sections;
 }

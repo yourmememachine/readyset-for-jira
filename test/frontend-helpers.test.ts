@@ -58,6 +58,7 @@ describe('toUserMessage (B14)', () => {
 
 const DRAFT: ImprovePayload = {
   issueKey: 'RS-1',
+  canApply: true,
   contentHash: 'hash-1',
   source: 'llm',
   fromCache: false,

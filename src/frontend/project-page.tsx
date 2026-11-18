@@ -3,7 +3,7 @@
  *
  * Project readiness at a glance: average score, % Ready, grade counts,
  * the 25 lowest-scoring open issues, a manual Rescan, and the
- * per-project settings (thresholds + the two toggleable checks).
+ * per-project settings (thresholds, per-check weights and toggles).
  * Data comes from the resolver functions in `src/functions/resolver.ts`.
  *
  * Scan model (cross-review round 3): the backend scans in bounded
@@ -37,7 +37,8 @@ import ForgeReconciler, {
 } from '@forge/react';
 import type { ProjectDashboardPayload, ScanResult } from '../functions/resolver';
 import { parseThresholdInput } from '../lib/threshold-input';
-import type { Grade, ProjectSettings } from '../lib/types';
+import { ALL_CHECK_IDS, CHECK_LABELS, DEFAULT_SETTINGS } from '../lib/rubric-config';
+import type { CheckId, Grade, ProjectSettings } from '../lib/types';
 import { toUserMessage } from '../lib/user-error';
 
 const GRADE_LABEL: Record<Grade, string> = {
@@ -75,11 +76,46 @@ function SettingsForm({
 }) {
   const [ready, setReady] = useState(String(settings.readyThreshold));
   const [almost, setAlmost] = useState(String(settings.almostThreshold));
-  const [estimateOn, setEstimateOn] = useState(settings.checksEnabled.estimate);
-  const [dueDateOn, setDueDateOn] = useState(settings.checksEnabled['due-date']);
-  const [reproStepsOn, setReproStepsOn] = useState(settings.checksEnabled['repro-steps']);
+  const [enabled, setEnabled] = useState<Record<CheckId, boolean>>({ ...settings.checksEnabled });
+  const [weights, setWeights] = useState<Record<CheckId, string>>(() =>
+    Object.fromEntries(ALL_CHECK_IDS.map((id) => [id, String(settings.weights[id])])) as Record<
+      CheckId,
+      string
+    >,
+  );
+  const [sectionsText, setSectionsText] = useState(settings.improveSections.join(', '));
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+
+  const adopt = (saved: ProjectSettings) => {
+    // Adopt the resolver's normalized values so the form shows what
+    // was actually stored (A17).
+    setReady(String(saved.readyThreshold));
+    setAlmost(String(saved.almostThreshold));
+    setEnabled({ ...saved.checksEnabled });
+    setWeights(
+      Object.fromEntries(ALL_CHECK_IDS.map((id) => [id, String(saved.weights[id])])) as Record<
+        CheckId,
+        string
+      >,
+    );
+    setSectionsText(saved.improveSections.join(', '));
+  };
+
+  const persist = async (next: ProjectSettings, successMessage: string) => {
+    setSaving(true);
+    setMessage(null);
+    try {
+      const saved = await invoke<ProjectSettings>('saveSettings', { projectKey, settings: next });
+      adopt(saved);
+      setMessage(successMessage);
+      onSaved(saved);
+    } catch (err) {
+      setMessage(toUserMessage(err));
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const save = async () => {
     const readyValue = parseThresholdInput(ready);
@@ -89,34 +125,50 @@ function SettingsForm({
       setMessage('Thresholds must be numbers between 0 and 100. Empty fields are not saved.');
       return;
     }
-    setSaving(true);
-    setMessage(null);
-    try {
-      const saved = await invoke<ProjectSettings>('saveSettings', {
-        projectKey,
-        settings: {
-          readyThreshold: readyValue,
-          almostThreshold: almostValue,
-          checksEnabled: { estimate: estimateOn, 'due-date': dueDateOn, 'repro-steps': reproStepsOn },
-        },
-      });
-      // Adopt the resolver's normalized values so the form shows what
-      // was actually stored (A17).
-      setReady(String(saved.readyThreshold));
-      setAlmost(String(saved.almostThreshold));
-      setEstimateOn(saved.checksEnabled.estimate);
-      setDueDateOn(saved.checksEnabled['due-date']);
-      setReproStepsOn(saved.checksEnabled['repro-steps']);
-      setMessage('Settings saved. Scores re-bucket against the new thresholds.');
-      onSaved(saved);
-    } catch (err) {
-      setMessage(toUserMessage(err));
-    } finally {
-      setSaving(false);
+    const parsedWeights = {} as Record<CheckId, number>;
+    for (const id of ALL_CHECK_IDS) {
+      const value = parseThresholdInput(weights[id] ?? '');
+      if (value === null || value < 0 || value > 100) {
+        setMessage(`The weight for "${CHECK_LABELS[id]}" must be a number between 0 and 100.`);
+        return;
+      }
+      parsedWeights[id] = value;
     }
+    const parsedSections = sectionsText
+      .split(',')
+      .map((name) => name.trim())
+      .filter((name) => name.length > 0);
+    if (parsedSections.length === 0) {
+      setMessage('The Improve structure needs at least one section heading.');
+      return;
+    }
+    await persist(
+      {
+        readyThreshold: readyValue,
+        almostThreshold: almostValue,
+        checksEnabled: enabled,
+        weights: parsedWeights,
+        improveSections: parsedSections,
+      },
+      'Settings saved. Issues rescore against the new rubric.',
+    );
+  };
+
+  const reset = async () => {
+    await persist(
+      {
+        readyThreshold: DEFAULT_SETTINGS.readyThreshold,
+        almostThreshold: DEFAULT_SETTINGS.almostThreshold,
+        checksEnabled: { ...DEFAULT_SETTINGS.checksEnabled },
+        weights: { ...DEFAULT_SETTINGS.weights },
+        improveSections: [...DEFAULT_SETTINGS.improveSections],
+      },
+      'Settings reset to the recommended rubric.',
+    );
   };
 
   if (!canEdit) {
+    const disabled = ALL_CHECK_IDS.filter((id) => !settings.checksEnabled[id]);
     return (
       <Stack space="space.100">
         <Heading size="small">Project settings</Heading>
@@ -125,6 +177,9 @@ function SettingsForm({
           {settings.almostThreshold}. Only project administrators can change
           ReadySet settings.
         </Text>
+        {disabled.length > 0 ? (
+          <Text>Checks switched off in this project: {disabled.map((id) => CHECK_LABELS[id]).join(', ')}.</Text>
+        ) : null}
       </Stack>
     );
   }
@@ -150,37 +205,48 @@ function SettingsForm({
           onChange={(event) => setAlmost(event.target.value)}
         />
       </Box>
-      <Inline space="space.100" alignBlock="center">
-        <Toggle
-          id="readyset-toggle-estimate"
-          isChecked={estimateOn}
-          onChange={(event) => setEstimateOn(event.target.checked ?? false)}
+      <Text>
+        Every check can be weighted (0–100) or switched off. Scores renormalize over the
+        checks that stay on, so the scale is always 0–100.
+      </Text>
+      {ALL_CHECK_IDS.map((id) => (
+        <Inline key={id} space="space.100" alignBlock="center">
+          <Toggle
+            id={`readyset-toggle-${id}`}
+            isChecked={enabled[id]}
+            onChange={(event) =>
+              setEnabled((current) => ({ ...current, [id]: event.target.checked ?? false }))
+            }
+          />
+          <Label labelFor={`readyset-toggle-${id}`}>{CHECK_LABELS[id]}</Label>
+          <Textfield
+            id={`readyset-weight-${id}`}
+            type="number"
+            value={weights[id]}
+            onChange={(event) =>
+              setWeights((current) => ({ ...current, [id]: event.target.value }))
+            }
+          />
+        </Inline>
+      ))}
+      <Box>
+        <Label labelFor="readyset-improve-sections">Improve drafts toward these sections (comma-separated)</Label>
+        <Textfield
+          id="readyset-improve-sections"
+          value={sectionsText}
+          onChange={(event) => setSectionsText(event.target.value)}
         />
-        <Label labelFor="readyset-toggle-estimate">Require an estimate</Label>
-      </Inline>
-      <Inline space="space.100" alignBlock="center">
-        <Toggle
-          id="readyset-toggle-due-date"
-          isChecked={dueDateOn}
-          onChange={(event) => setDueDateOn(event.target.checked ?? false)}
-        />
-        <Label labelFor="readyset-toggle-due-date">
-          Require a due date on high-priority issues
-        </Label>
-      </Inline>
-      <Inline space="space.100" alignBlock="center">
-        <Toggle
-          id="readyset-toggle-repro-steps"
-          isChecked={reproStepsOn}
-          onChange={(event) => setReproStepsOn(event.target.checked ?? false)}
-        />
-        <Label labelFor="readyset-toggle-repro-steps">
-          Require steps to reproduce on bugs
-        </Label>
-      </Inline>
+        <Text>
+          One heading must contain "Acceptance criteria" — the rubric reads that section. If
+          none does, it is added automatically.
+        </Text>
+      </Box>
       <Inline space="space.100">
         <Button appearance="primary" onClick={save} isDisabled={saving}>
           {saving ? 'Saving…' : 'Save settings'}
+        </Button>
+        <Button onClick={reset} isDisabled={saving}>
+          Reset to recommended
         </Button>
       </Inline>
       {message ? <Text>{message}</Text> : null}

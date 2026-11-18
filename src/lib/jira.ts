@@ -374,8 +374,10 @@ export class FakeJiraAdapter implements JiraAdapter {
   readonly setScorePropertyCalls: Array<{ issueKey: string; value: { score: number; grade: string; updatedAt: string } }> = [];
   /** When set, setScoreProperty throws it (best-effort contract tests). */
   setScorePropertyError: Error | null = null;
-  /** Projects the "current user" administers; empty = all projects. */
+  /** Projects the "current user" administers; null = all projects. */
   adminProjects: ReadonlySet<string> | null = null;
+  /** Projects the "current user" may edit issues in; null = all. */
+  editProjects: ReadonlySet<string> | null = null;
 
   constructor(
     private readonly issues: RawJiraIssue[],
@@ -420,7 +422,10 @@ export class FakeJiraAdapter implements JiraAdapter {
     return structuredClone(this.fields);
   }
 
-  async hasProjectPermission(projectKey: string): Promise<boolean> {
+  async hasProjectPermission(projectKey: string, permission?: string): Promise<boolean> {
+    if (permission === 'EDIT_ISSUES') {
+      return this.editProjects === null || this.editProjects.has(projectKey);
+    }
     return this.adminProjects === null || this.adminProjects.has(projectKey);
   }
 

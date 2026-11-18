@@ -10,6 +10,7 @@ import { buildTemplateDraft } from '../src/lib/improve-template';
 import { FakeJiraAdapter, normalizeIssue, type RawJiraIssue } from '../src/lib/jira';
 import type { DraftRequest, LlmClient } from '../src/lib/llm';
 import { scoreIssue } from '../src/lib/rubric';
+import { DEFAULT_IMPROVE_SECTIONS } from '../src/lib/rubric-config';
 import { InMemoryKV, ScoreStore } from '../src/lib/store';
 import { LONG_DESCRIPTION, makeIssue, makeRawMessyIssue } from './fixtures';
 
@@ -262,7 +263,10 @@ describe('applyImprovement', () => {
     expect(writtenText).toContain('Acceptance criteria');
     expect(jira.addCommentCalls).toHaveLength(1);
     const commentText = extractTextFromAdf(jira.addCommentCalls[0]?.body);
-    expect(commentText).toBe('Description improved with ReadySet — readiness 20 → 60.');
+    expect(commentText).toBe(
+      'Description improved with ReadySet — readiness 20 → 60.\n' +
+        'Now passing: Description is substantial; Acceptance criteria present.',
+    );
     // The stored score (dashboard + Coach source) is the new one.
     expect((await store.getScore('RS-3'))?.score).toBe(60);
   });
@@ -308,7 +312,7 @@ describe('applyImprovement', () => {
     const llm = new FakeLlmClient(() => GOOD_MARKDOWN);
     const { deps, jira } = makeImproverDeps([makeRawMessyIssue()], llm);
     const issue = normalizeIssue(makeRawMessyIssue());
-    const hash = improvementContentHash(issue, failedOf(issue));
+    const hash = improvementContentHash(issue, failedOf(issue), [...DEFAULT_IMPROVE_SECTIONS]);
     await expect(applyImprovement(deps, { issueKey: 'RS-3', contentHash: hash })).rejects.toThrow(
       /no longer available/,
     );
@@ -361,5 +365,64 @@ describe('payload completeness (live RS-2 incident)', () => {
       applyImprovement(deps, { issueKey: 'RS-2', contentHash: 'irrelevant' }),
     ).rejects.toThrow(/incomplete/i);
     expect((deps.jira as SparseGetIssue).updateDescriptionCalls).toEqual([]);
+  });
+});
+
+describe('custom Improve structure (Wave 2)', () => {
+  it('the template draft follows the configured section names and order', () => {
+    const issue = makeIssue({ summary: 'Fix bug', descriptionText: '' });
+    const sections = buildTemplateDraft(issue, [], ['Why', 'Acceptance criteria (done when)', 'Wrap-up']);
+    expect(sections.map((section) => section.heading)).toEqual([
+      'Why',
+      'Acceptance criteria (done when)',
+      'Wrap-up',
+    ]);
+  });
+
+  it('normalizeImproveSections guarantees an acceptance-criteria heading', async () => {
+    const { normalizeImproveSections } = await import('../src/lib/store');
+    expect(normalizeImproveSections(['Goal', 'Notes'], ['Goal'])).toEqual([
+      'Goal',
+      'Acceptance criteria',
+      'Notes',
+    ]);
+    expect(normalizeImproveSections([' goal ', 'GOAL', ''], ['Goal'])).toEqual([
+      'Acceptance criteria',
+      'goal',
+    ]);
+    expect(normalizeImproveSections([], ['Goal', 'Acceptance criteria'])).toEqual([
+      'Goal',
+      'Acceptance criteria',
+    ]);
+  });
+});
+
+describe('Apply permission gate + richer audit comment (Wave 2)', () => {
+  it('refuses Apply when the user cannot edit issues, and writes nothing', async () => {
+    const llm = new FakeLlmClient(() => GOOD_MARKDOWN);
+    const { deps, jira } = makeImproverDeps([makeRawMessyIssue()], llm);
+    const payload = await improveIssue(deps, { issueKey: 'RS-3' });
+    expect(payload.canApply).toBe(true);
+    jira.editProjects = new Set<string>(); // user edits nothing
+    const denied = await improveIssue(deps, { issueKey: 'RS-3' });
+    expect(denied.canApply).toBe(false);
+    await expect(
+      applyImprovement(deps, { issueKey: 'RS-3', contentHash: payload.contentHash }),
+    ).rejects.toThrow(/do not have permission to edit issues/);
+    expect(jira.updateDescriptionCalls).toHaveLength(0);
+    expect(jira.addCommentCalls).toHaveLength(0);
+  });
+
+  it('the audit comment names the checks that flipped', async () => {
+    const llm = new FakeLlmClient(() => GOOD_MARKDOWN);
+    const { deps, jira } = makeImproverDeps([makeRawMessyIssue()], llm);
+    const payload = await improveIssue(deps, { issueKey: 'RS-3' });
+    await applyImprovement(deps, { issueKey: 'RS-3', contentHash: payload.contentHash });
+    expect(jira.addCommentCalls).toHaveLength(1);
+    const commentText = extractTextFromAdf(jira.addCommentCalls[0]?.body as never);
+    expect(commentText).toContain('readiness 20 → 60');
+    expect(commentText).toContain('Now passing:');
+    expect(commentText).toContain('Description is substantial');
+    expect(commentText).toContain('Acceptance criteria present');
   });
 });

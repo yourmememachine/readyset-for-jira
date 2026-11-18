@@ -83,13 +83,28 @@ export interface ProjectSettings {
   readyThreshold: number;
   /** Score at or above which an issue counts as Almost (below: Not ready). */
   almostThreshold: number;
-  /** The two opinionated checks can be switched off per project. When a
-   *  check is off it is excluded from scoring and weights renormalize. */
-  checksEnabled: {
-    estimate: boolean;
-    'due-date': boolean;
-    'repro-steps': boolean;
-  };
+  /**
+   * Every check can be switched off per project (Wave 2: previously
+   * only estimate / due-date / repro-steps were toggleable). When a
+   * check is off it is excluded from scoring and weights renormalize.
+   */
+  checksEnabled: Record<CheckId, boolean>;
+  /**
+   * Per-check weights (Wave 2: previously the fixed CHECK_WEIGHTS).
+   * Scores renormalize over the enabled checks' weights, so any
+   * non-negative values keep the 0–100 scale. normalizeSettings
+   * guarantees a complete, clamped map.
+   */
+  weights: Record<CheckId, number>;
+  /**
+   * The section headings Improve drafts toward, in order (Wave 2:
+   * previously the fixed Goal / Context / Acceptance criteria /
+   * Definition of done). normalizeSettings guarantees the list is
+   * non-empty, deduplicated, and contains exactly one heading
+   * matching "Acceptance criteria" — the rubric reads that section,
+   * so it can be renamed only to another name containing it.
+   */
+  improveSections: string[];
 }
 
 /**

@@ -161,7 +161,7 @@ function ImproveSection({
             <Button
               appearance="primary"
               onClick={() => void runApply()}
-              isDisabled={applying}
+              isDisabled={applying || !draft.canApply}
             >
               {applying ? 'Applying…' : 'Apply'}
             </Button>
@@ -172,6 +172,12 @@ function ImproveSection({
               Discard
             </Button>
           </Inline>
+          {!draft.canApply ? (
+            <Text>
+              You can review this draft, but applying it needs Edit issues permission in this
+              project.
+            </Text>
+          ) : null}
         </Stack>
       );
     }

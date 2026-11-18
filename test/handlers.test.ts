@@ -141,7 +141,7 @@ describe('getIssuePanel', () => {
       projectKey: 'RS',
       settings: {
         ...DEFAULT_SETTINGS,
-        checksEnabled: { estimate: false, 'due-date': true, 'repro-steps': true },
+        checksEnabled: { ...DEFAULT_SETTINGS.checksEnabled, estimate: false, 'due-date': true, 'repro-steps': true },
       },
     });
     const after = await getIssuePanel(deps, { issueKey: 'RS-2' });
@@ -689,7 +689,10 @@ describe('settings handlers', () => {
     } as unknown as ProjectSettings;
     const saved = await saveSettings(deps, { projectKey: 'RS', settings: partial });
     expect(saved.readyThreshold).toBe(85);
-    expect(saved.checksEnabled).toEqual({ estimate: false, 'due-date': true, 'repro-steps': true });
+    // Wave 2: the merge now produces the full map — the partial key
+    // overrides, every other check keeps its current (default) value.
+    expect(saved.checksEnabled).toEqual({ ...DEFAULT_SETTINGS.checksEnabled, estimate: false });
+    expect(saved.weights).toEqual(DEFAULT_SETTINGS.weights);
   });
 
   it('B13: saveSettings rejects users without project-admin permission', async () => {

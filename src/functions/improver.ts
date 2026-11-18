@@ -57,6 +57,9 @@ export interface ImproverDeps extends ResolverDeps {
 
 export interface ImprovePayload {
   issueKey: string;
+  /** Whether the viewing user may edit issues in this project — the
+   *  panel disables Apply when false; applyImprovement re-checks. */
+  canApply: boolean;
   /** Pass back to applyImprovement — proves the draft matches the issue. */
   contentHash: string;
   source: DraftSource;
@@ -80,15 +83,42 @@ export interface ApplyPayload {
  * rubric version. Settings thresholds are deliberately excluded —
  * they change grades, not the draft's content targets.
  */
-export function improvementContentHash(issue: NormalizedIssue, failedChecks: CheckResult[]): string {
+export function improvementContentHash(
+  issue: NormalizedIssue,
+  failedChecks: CheckResult[],
+  sections: string[] = [],
+): string {
   const material = JSON.stringify({
     v: RUBRIC_VERSION,
     summary: issue.summary,
     descriptionText: issue.descriptionText,
     acceptanceCriteriaText: issue.acceptanceCriteriaText,
     failed: failedChecks.map((check) => check.id),
+    // Wave 2: the draft's target structure is part of what a draft
+    // depends on — changing it must invalidate cached drafts.
+    sections,
   });
   return createHash('sha256').update(material).digest('hex');
+}
+
+const EDIT_ISSUES_PERMISSION = 'EDIT_ISSUES';
+
+/**
+ * Whether the current user may edit issues in the project (Wave 2
+ * governance): drafting is read-only and open to viewers, but Apply
+ * rewrites the description, so it requires the user's own Edit
+ * issues permission — checked as the user, fail-closed on error.
+ */
+export async function canUserEditIssues(
+  deps: ImproverDeps,
+  projectKey: string,
+): Promise<boolean> {
+  const adapter = deps.jiraUser ?? deps.jira;
+  try {
+    return await adapter.hasProjectPermission(projectKey, EDIT_ISSUES_PERMISSION);
+  } catch {
+    return false;
+  }
 }
 
 function failedChecksOf(issue: NormalizedIssue, settings: ProjectSettings): CheckResult[] {
@@ -111,15 +141,19 @@ async function draftForIssue(
 ): Promise<{ draft: ImprovementDraft; fromCache: boolean }> {
   const scored = scoreIssue(issue, settings);
   const failed = scored.checks.filter((check) => !check.passed);
-  const contentHash = improvementContentHash(issue, failed);
+  const contentHash = improvementContentHash(issue, failed, settings.improveSections);
   const cached = await deps.store.getDraft(issue.key, contentHash);
   if (cached) return { draft: cached, fromCache: true };
 
   let sections: DraftSection[];
   let source: DraftSource;
   try {
-    const markdown = await deps.llm.draftDescription({ issue, failedChecks: failed });
-    sections = parseDraftMarkdown(markdown);
+    const markdown = await deps.llm.draftDescription({
+      issue,
+      failedChecks: failed,
+      sections: settings.improveSections,
+    });
+    sections = parseDraftMarkdown(markdown, settings.improveSections);
     source = 'llm';
   } catch (err) {
     // LLM unavailable / errored / unusable reply: the deterministic
@@ -128,7 +162,7 @@ async function draftForIssue(
     // is diagnosable from `forge logs` — phase 2b's first live Improve
     // fell back with no trace, which is why this line exists.
     console.error('ReadySet: LLM draft failed, using template fallback:', err);
-    sections = buildTemplateDraft(issue, failed);
+    sections = buildTemplateDraft(issue, failed, settings.improveSections);
     source = 'template';
   }
   const draft: ImprovementDraft = {
@@ -160,6 +194,7 @@ export async function improveIssue(
   const { draft, fromCache } = await draftForIssue(deps, issue, settings);
   return {
     issueKey: issue.key,
+    canApply: await canUserEditIssues(deps, issue.projectKey),
     contentHash: draft.contentHash,
     source: draft.source,
     fromCache,
@@ -185,7 +220,7 @@ export async function applyImprovement(
   const settings = await deps.store.getSettings(issue.projectKey);
   const current = scoreIssue(issue, settings);
   const failed = current.checks.filter((check) => !check.passed);
-  if (improvementContentHash(issue, failed) !== payload.contentHash) {
+  if (improvementContentHash(issue, failed, settings.improveSections) !== payload.contentHash) {
     throw new Error(
       'This issue changed since the draft was generated. Run Improve again to refresh the draft.',
     );
@@ -193,6 +228,14 @@ export async function applyImprovement(
   const draft = await deps.store.getDraft(payload.issueKey, payload.contentHash);
   if (!draft) {
     throw new Error('The draft for this issue is no longer available. Run Improve again.');
+  }
+  // Governance gate (Wave 2): the write runs as the app, but Apply is
+  // only offered to — and only honoured for — users who themselves
+  // hold Edit issues in the project.
+  if (!(await canUserEditIssues(deps, issue.projectKey))) {
+    throw new Error(
+      'You do not have permission to edit issues in this project, so the draft cannot be applied.',
+    );
   }
 
   // The write itself runs as the app (DESIGN.md §5.1): the app holds
@@ -207,14 +250,25 @@ export async function applyImprovement(
   const after = readCompleteIssue(await deps.jira.getIssue(payload.issueKey, fieldMap), fieldMap);
   const record = await scoreAndStore(deps, after, settings, fieldMap, 'rest');
 
-  const comment = buildAdfFromSections([
-    {
-      heading: '',
-      paragraphs: [
-        `Description improved with ReadySet — readiness ${current.score} → ${record.score}.`,
-      ],
-    },
-  ]);
+  // Richer audit comment (Wave 2): name the checks that flipped, so
+  // the trail shows WHY the score moved, not just that it did.
+  const beforeById = new Map(current.checks.map((check) => [check.id, check.passed]));
+  const flippedToPass = record.checks
+    .filter((check) => check.passed && beforeById.get(check.id) === false)
+    .map((check) => check.label);
+  const flippedToFail = record.checks
+    .filter((check) => !check.passed && beforeById.get(check.id) === true)
+    .map((check) => check.label);
+  const commentParagraphs = [
+    `Description improved with ReadySet — readiness ${current.score} → ${record.score}.`,
+  ];
+  if (flippedToPass.length > 0) {
+    commentParagraphs.push(`Now passing: ${flippedToPass.join('; ')}.`);
+  }
+  if (flippedToFail.length > 0) {
+    commentParagraphs.push(`No longer passing: ${flippedToFail.join('; ')}.`);
+  }
+  const comment = buildAdfFromSections([{ heading: '', paragraphs: commentParagraphs }]);
   await deps.jira.addComment(payload.issueKey, comment);
 
   return {

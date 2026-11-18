@@ -429,10 +429,18 @@ const ALL_CHECKS: ReadonlyArray<(issue: NormalizedIssue) => CheckResult | null> 
 ];
 
 export function isCheckEnabled(id: CheckId, settings: ProjectSettings): boolean {
-  if ((TOGGLEABLE_CHECKS as readonly string[]).includes(id)) {
-    return settings.checksEnabled[id as keyof ProjectSettings['checksEnabled']];
-  }
-  return true;
+  // Wave 2: every check is toggleable. A missing key (legacy settings
+  // object) means enabled — normalizeSettings fills the full map on
+  // every read/save, so this only matters for hand-built settings.
+  return settings.checksEnabled[id] !== false;
+}
+
+/** The weight in force for a check under these settings. */
+export function weightFor(id: CheckId, settings: ProjectSettings): number {
+  const weight = settings.weights?.[id];
+  return typeof weight === 'number' && Number.isFinite(weight) && weight >= 0
+    ? weight
+    : CHECK_WEIGHTS[id];
 }
 
 export function gradeForScore(score: number, settings: ProjectSettings): Grade {
@@ -448,9 +456,13 @@ export function scoreIssue(
   issue: NormalizedIssue,
   settings: ProjectSettings = DEFAULT_SETTINGS,
 ): ReadinessScore {
-  const checks = ALL_CHECKS.map((check) => check(issue)).filter(
-    (check): check is CheckResult => check !== null && isCheckEnabled(check.id, settings),
-  );
+  const checks = ALL_CHECKS.map((check) => check(issue))
+    .filter((check): check is CheckResult => check !== null && isCheckEnabled(check.id, settings))
+    // Wave 2: weights come from project settings, not the static
+    // table — re-stamp each result so every downstream consumer
+    // (next-fix ordering, projections, panels) sees the weight in
+    // force.
+    .map((check) => ({ ...check, weight: weightFor(check.id, settings) }));
   const totalWeight = checks.reduce((sum, check) => sum + check.weight, 0);
   const earnedWeight = checks.reduce(
     (sum, check) => sum + (check.passed ? check.weight : 0),

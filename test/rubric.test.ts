@@ -294,7 +294,7 @@ describe('cross-review round 3 — rubric regressions', () => {
 describe('settings: toggles and thresholds', () => {
   it('renormalizes to 100 when the only failing check is disabled', () => {
     const issue = makeIssue({ storyPoints: null, originalEstimateSeconds: null });
-    const result = scoreIssue(issue, settings({ checksEnabled: { estimate: false, 'due-date': true, 'repro-steps': true } }));
+    const result = scoreIssue(issue, settings({ checksEnabled: { ...DEFAULT_SETTINGS.checksEnabled, estimate: false, 'due-date': true, 'repro-steps': true } }));
     expect(result.score).toBe(100);
     expect(result.checks.find((candidate) => candidate.id === 'estimate')).toBeUndefined();
     expect(result.checks).toHaveLength(9);
@@ -302,7 +302,7 @@ describe('settings: toggles and thresholds', () => {
 
   it('renormalizes the due-date check the same way', () => {
     const issue = makeIssue({ priority: 'Highest', dueDate: null });
-    const result = scoreIssue(issue, settings({ checksEnabled: { estimate: true, 'due-date': false, 'repro-steps': true } }));
+    const result = scoreIssue(issue, settings({ checksEnabled: { ...DEFAULT_SETTINGS.checksEnabled, estimate: true, 'due-date': false, 'repro-steps': true } }));
     expect(result.score).toBe(100);
   });
 
@@ -376,7 +376,7 @@ describe('bug pack: repro-steps (upgrade pack, rubric v3)', () => {
   it('the project toggle removes the check for bugs too', () => {
     const result = scoreIssue(
       makeIssue({ issueType: 'Bug' }),
-      settings({ checksEnabled: { estimate: true, 'due-date': true, 'repro-steps': false } }),
+      settings({ checksEnabled: { ...DEFAULT_SETTINGS.checksEnabled, estimate: true, 'due-date': true, 'repro-steps': false } }),
     );
     expect(result.checks.some((check) => check.id === 'repro-steps')).toBe(false);
     expect(result.score).toBe(100);
@@ -457,5 +457,49 @@ describe('projectedScoreIfFixed (upgrade cross-review A2)', () => {
     const result = scoreIssue(makeEmptyIssue());
     expect(result.score).toBe(15);
     expect(projectedScoreIfFixed(result.checks, 'description')).toBe(35);
+  });
+});
+
+describe('custom weights (Wave 2)', () => {
+  it('scores renormalize over admin-set weights', () => {
+    const settings: ProjectSettings = {
+      ...DEFAULT_SETTINGS,
+      weights: { ...DEFAULT_SETTINGS.weights, description: 60, 'acceptance-criteria': 60 },
+    };
+    // Full issue still scores 100 regardless of weights.
+    expect(scoreIssue(makeIssue(), settings).score).toBe(100);
+    // Empty issue: passing checks are no-placeholders (10) + due-date
+    // (5) of a 190 total -> 8.
+    expect(scoreIssue(makeEmptyIssue(), settings).score).toBe(8);
+  });
+
+  it('a zero-weighted failing check costs nothing', () => {
+    const settings: ProjectSettings = {
+      ...DEFAULT_SETTINGS,
+      weights: { ...DEFAULT_SETTINGS.weights, estimate: 0 },
+    };
+    const result = scoreIssue(makeIssue({ storyPoints: null }), settings);
+    expect(result.checks.find((check) => check.id === 'estimate')?.weight).toBe(0);
+    expect(result.score).toBe(100);
+  });
+
+  it('any check can be disabled, not just the original three', () => {
+    const settings: ProjectSettings = {
+      ...DEFAULT_SETTINGS,
+      checksEnabled: { ...DEFAULT_SETTINGS.checksEnabled, description: false },
+    };
+    const result = scoreIssue(makeEmptyIssue(), settings);
+    expect(result.checks.some((check) => check.id === 'description')).toBe(false);
+    // Remaining passing: no-placeholders 10 + due-date 5 of 80 -> 19.
+    expect(result.score).toBe(19);
+  });
+
+  it('nextFixFor follows the admin weights, not the defaults', () => {
+    const settings: ProjectSettings = {
+      ...DEFAULT_SETTINGS,
+      weights: { ...DEFAULT_SETTINGS.weights, 'linked-work': 50 },
+    };
+    const result = scoreIssue(makeEmptyIssue(), settings);
+    expect(nextFixFor(result.checks)?.id).toBe('linked-work');
   });
 });

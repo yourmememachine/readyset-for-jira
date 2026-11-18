@@ -35,9 +35,9 @@
  * in-memory implementation so accidental shared references (which Forge
  * KVS would never allow) fail loudly in tests instead of in production.
  */
-import { DEFAULT_SETTINGS } from './rubric-config';
+import { ACCEPTANCE_CRITERIA_HEADING, ALL_CHECK_IDS, DEFAULT_SETTINGS } from './rubric-config';
 import type { JiraFieldMap } from './jira';
-import type { ImprovementDraft, ProjectSettings, StoredScore } from './types';
+import type { CheckId, ImprovementDraft, ProjectSettings, StoredScore } from './types';
 
 export interface KeyValueStore {
   get<T>(key: string): Promise<T | undefined>;
@@ -147,15 +147,67 @@ export function normalizeSettings(
 ): ProjectSettings {
   const ready = clampThreshold(input?.readyThreshold, base.readyThreshold);
   const almost = Math.min(ready, clampThreshold(input?.almostThreshold, base.almostThreshold));
+  const checksEnabled = {} as Record<CheckId, boolean>;
+  const weights = {} as Record<CheckId, number>;
+  for (const id of ALL_CHECK_IDS) {
+    checksEnabled[id] = input?.checksEnabled?.[id] ?? base.checksEnabled[id];
+    weights[id] = clampWeight(input?.weights?.[id], base.weights[id]);
+  }
+  // Degenerate-config guard (Wave 2): if every enabled check carries
+  // weight 0 the denominator collapses and every issue scores 0 —
+  // almost certainly a settings mistake, so fall back to the base
+  // weights rather than brick the project's scoring.
+  const enabledWeight = ALL_CHECK_IDS.reduce(
+    (sum, id) => sum + (checksEnabled[id] ? weights[id] : 0),
+    0,
+  );
+  if (enabledWeight === 0) {
+    for (const id of ALL_CHECK_IDS) weights[id] = base.weights[id];
+  }
   return {
     readyThreshold: ready,
     almostThreshold: almost,
-    checksEnabled: {
-      estimate: input?.checksEnabled?.estimate ?? base.checksEnabled.estimate,
-      'due-date': input?.checksEnabled?.['due-date'] ?? base.checksEnabled['due-date'],
-      'repro-steps': input?.checksEnabled?.['repro-steps'] ?? base.checksEnabled['repro-steps'],
-    },
+    checksEnabled,
+    weights,
+    improveSections: normalizeImproveSections(input?.improveSections, base.improveSections),
   };
+}
+
+/**
+ * Sanitize the Improve section list (Wave 2): trim, drop empties and
+ * over-long names, dedupe case-insensitively, cap at 6 — and guarantee
+ * exactly one heading matching "Acceptance criteria", because the
+ * rubric reads that section in applied descriptions. A list with no
+ * such heading gets the canonical one inserted before the last entry.
+ */
+export function normalizeImproveSections(
+  input: string[] | undefined,
+  base: string[],
+): string[] {
+  const source = Array.isArray(input) && input.length > 0 ? input : base;
+  const seen = new Set<string>();
+  const sections: string[] = [];
+  for (const raw of source) {
+    if (typeof raw !== 'string') continue;
+    const name = raw.trim().replace(/^#+\s*/, '');
+    if (name.length === 0 || name.length > 60) continue;
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    sections.push(name);
+    if (sections.length === 6) break;
+  }
+  if (sections.length === 0) return [...base];
+  const acIndex = sections.findIndex((name) => /acceptance criteria/i.test(name));
+  if (acIndex === -1) {
+    sections.splice(Math.max(0, sections.length - 1), 0, ACCEPTANCE_CRITERIA_HEADING);
+  }
+  return sections;
+}
+
+function clampWeight(value: unknown, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.min(100, Math.max(0, Math.round(value)));
 }
 
 const LIST_PAGE_SIZE = 100;

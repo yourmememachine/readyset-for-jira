@@ -165,15 +165,54 @@ export const STOPWORDS: ReadonlySet<string> = new Set([
 export const SUMMARY_MIN_CHARS = 25;
 export const SUMMARY_MIN_SPECIFIC_TOKENS = 3;
 
+/** The canonical acceptance-criteria heading (the rubric reads it). */
+export const ACCEPTANCE_CRITERIA_HEADING = 'Acceptance criteria';
+
+/** Default Improve section structure (Wave 2: now per-project). */
+export const DEFAULT_IMPROVE_SECTIONS: readonly string[] = [
+  'Goal',
+  'Context',
+  ACCEPTANCE_CRITERIA_HEADING,
+  'Definition of done',
+];
+
 export const DEFAULT_SETTINGS: ProjectSettings = {
   readyThreshold: 80,
   almostThreshold: 60,
   checksEnabled: {
+    description: true,
+    'acceptance-criteria': true,
     estimate: true,
+    priority: true,
+    assignee: true,
+    'labels-or-components': true,
+    'linked-work': true,
+    'no-placeholders': true,
+    'summary-quality': true,
     'due-date': true,
     'repro-steps': true,
   },
+  weights: { ...CHECK_WEIGHTS },
+  improveSections: [...DEFAULT_IMPROVE_SECTIONS],
 };
 
-/** Checks a project may switch off in settings (DESIGN.md §5.3 item 6). */
-export const TOGGLEABLE_CHECKS: readonly CheckId[] = ['estimate', 'due-date', 'repro-steps'];
+/** Every check id, in rubric order (settings UI + normalization). */
+export const ALL_CHECK_IDS: readonly CheckId[] = [
+  'description',
+  'acceptance-criteria',
+  'estimate',
+  'priority',
+  'assignee',
+  'labels-or-components',
+  'linked-work',
+  'no-placeholders',
+  'summary-quality',
+  'due-date',
+  'repro-steps',
+];
+
+/**
+ * Checks a project may switch off in settings. Wave 2: every check is
+ * toggleable (previously only estimate / due-date / repro-steps).
+ */
+export const TOGGLEABLE_CHECKS: readonly CheckId[] = ALL_CHECK_IDS;

@@ -120,9 +120,11 @@ export function settingsFingerprint(
     v: RUBRIC_VERSION,
     ready: settings.readyThreshold,
     almost: settings.almostThreshold,
-    estimate: settings.checksEnabled.estimate,
-    dueDate: settings.checksEnabled['due-date'],
-    reproSteps: settings.checksEnabled['repro-steps'],
+    // Wave 2: every toggle and every weight feeds the fingerprint —
+    // any settings change must rescore rather than serve stale cache.
+    checksEnabled: settings.checksEnabled,
+    weights: settings.weights,
+    improveSections: settings.improveSections,
     fieldMap,
   });
 }

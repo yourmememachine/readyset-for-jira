@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_SETTINGS } from '../src/lib/rubric-config';
-import { InMemoryKV, ScoreStore } from '../src/lib/store';
-import type { StoredScore } from '../src/lib/types';
+import { InMemoryKV, ScoreStore, normalizeSettings } from '../src/lib/store';
+import type { ProjectSettings, StoredScore } from '../src/lib/types';
 
 function record(issueKey: string, projectKey: string, score = 90): StoredScore {
   return {
@@ -95,7 +95,7 @@ describe('ScoreStore', () => {
     const custom = {
       ...DEFAULT_SETTINGS,
       readyThreshold: 70,
-      checksEnabled: { estimate: false, 'due-date': true, 'repro-steps': true },
+      checksEnabled: { ...DEFAULT_SETTINGS.checksEnabled, estimate: false, 'due-date': true, 'repro-steps': true },
     };
     await store.saveSettings('RS', custom);
     expect(await store.getSettings('RS')).toEqual(custom);
@@ -196,5 +196,36 @@ describe('score history (upgrade pack, review #3)', () => {
     expect((await store.getScore('RS-1'))?.history?.map((entry) => entry.score)).toEqual([55]);
     await store.saveScore(record('RS-1', 'RS', 80));
     expect((await store.getScore('RS-1'))?.history?.map((entry) => entry.score)).toEqual([55, 80]);
+  });
+});
+
+describe('normalizeSettings weights (Wave 2)', () => {
+  it('merges partial weights over the base and clamps them', () => {
+    const merged = normalizeSettings(
+      { weights: { estimate: 250, priority: -3 } } as unknown as Partial<ProjectSettings>,
+      DEFAULT_SETTINGS,
+    );
+    expect(merged.weights.estimate).toBe(100);
+    expect(merged.weights.priority).toBe(0);
+    expect(merged.weights.description).toBe(20);
+  });
+
+  it('an all-zero enabled weight map falls back to the base weights', () => {
+    const zeroed = Object.fromEntries(
+      Object.keys(DEFAULT_SETTINGS.weights).map((id) => [id, 0]),
+    ) as ProjectSettings['weights'];
+    const merged = normalizeSettings({ weights: zeroed }, DEFAULT_SETTINGS);
+    expect(merged.weights).toEqual(DEFAULT_SETTINGS.weights);
+  });
+
+  it('legacy settings without weights or new toggles normalize to defaults', () => {
+    const legacy = {
+      readyThreshold: 80,
+      almostThreshold: 60,
+      checksEnabled: { estimate: true, 'due-date': true, 'repro-steps': true },
+    } as unknown as Partial<ProjectSettings>;
+    const merged = normalizeSettings(legacy, DEFAULT_SETTINGS);
+    expect(merged.weights).toEqual(DEFAULT_SETTINGS.weights);
+    expect(merged.checksEnabled.description).toBe(true);
   });
 });

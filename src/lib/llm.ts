@@ -10,12 +10,15 @@
  * failure the caller falls back to the deterministic template).
  */
 import type { DraftSection } from './adf';
+import { DEFAULT_IMPROVE_SECTIONS } from './rubric-config';
 import type { CheckResult, NormalizedIssue } from './types';
 
 export interface DraftRequest {
   issue: NormalizedIssue;
   /** The rubric checks the issue currently fails — the draft's targets. */
   failedChecks: CheckResult[];
+  /** Section headings to draft toward (project settings, Wave 2). */
+  sections?: string[];
 }
 
 /**
@@ -29,15 +32,16 @@ export interface LlmClient {
   draftDescription(request: DraftRequest): Promise<string>;
 }
 
-/** The section headings the draft contract is built around. */
-export const DRAFT_HEADINGS = ['Goal', 'Context', 'Acceptance criteria', 'Notes'] as const;
+/** The default section headings (project settings can override). */
+export const DRAFT_HEADINGS = DEFAULT_IMPROVE_SECTIONS;
 
 export function buildDraftPrompt(request: DraftRequest): { system: string; user: string } {
   const { issue, failedChecks } = request;
+  const headings = request.sections && request.sections.length > 0 ? request.sections : DRAFT_HEADINGS;
   const system = [
     'You rewrite Jira issue descriptions for a sprint-readiness tool.',
     'Reply with markdown using exactly these level-2 headings, in this order:',
-    ...DRAFT_HEADINGS.map((heading) => `## ${heading}`),
+    ...headings.map((heading) => `## ${heading}`),
     'Rules:',
     '- Use ONLY facts present in the issue text you are given. Never invent names, dates, metrics, systems, or requirements.',
     '- If the issue gives you too few facts for a full description, still return the complete section structure: state plainly in Context what the issue does not specify, and write Acceptance criteria for verifying the work once it is specified. Never refuse, never ask questions back, and never write anything outside the section structure.',
@@ -76,7 +80,10 @@ export function buildDraftPrompt(request: DraftRequest): { system: string; user:
  * no headings at all, and a length check alone would happily offer
  * that refusal as the draft (phase 2b, live on RS-9).
  */
-export function parseDraftMarkdown(markdown: string): DraftSection[] {
+export function parseDraftMarkdown(
+  markdown: string,
+  expectedSections: readonly string[] = DRAFT_HEADINGS,
+): DraftSection[] {
   const sections: DraftSection[] = [];
   let current: DraftSection | null = null;
   const pushParagraphs = (section: DraftSection, bodyLines: string[]): void => {
@@ -132,10 +139,13 @@ export function parseDraftMarkdown(markdown: string): DraftSection[] {
   if (sections.length === 0 || totalChars < 40) {
     throw new Error('ReadySet: LLM draft reply had no usable content');
   }
+  const acHeading = expectedSections.find((name) => /acceptance criteria/i.test(name));
   const hasAcceptanceCriteria = sections.some(
     (section) =>
-      section.heading.trim().toLowerCase() === 'acceptance criteria' &&
-      section.paragraphs.length > 0,
+      section.paragraphs.length > 0 &&
+      (acHeading
+        ? section.heading.trim().toLowerCase() === acHeading.trim().toLowerCase()
+        : /acceptance criteria/i.test(section.heading)),
   );
   if (!hasAcceptanceCriteria) {
     throw new Error('ReadySet: LLM draft reply ignored the section contract');
