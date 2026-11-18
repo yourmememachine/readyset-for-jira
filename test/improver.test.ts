@@ -12,7 +12,7 @@ import { buildTemplateDraft } from '../src/lib/improve-template';
 import { FakeJiraAdapter, normalizeIssue, type RawJiraIssue } from '../src/lib/jira';
 import type { DraftRequest, LlmClient } from '../src/lib/llm';
 import { scoreIssue } from '../src/lib/rubric';
-import { DEFAULT_IMPROVE_SECTIONS } from '../src/lib/rubric-config';
+import { DEFAULT_IMPROVE_SECTIONS, DEFAULT_SETTINGS } from '../src/lib/rubric-config';
 import { InMemoryKV, ScoreStore } from '../src/lib/store';
 import { LONG_DESCRIPTION, makeIssue, makeRawMessyIssue } from './fixtures';
 
@@ -502,6 +502,32 @@ describe('AC-only Improve (Wave 3)', () => {
     expect(full.sections.length).toBeGreaterThan(1);
     expect(acOnly.sections).toHaveLength(1);
   });
+
+  it('selects the AC section by heading when the reply leads with another section (A1)', async () => {
+    const STRAY_FIRST = [
+      '## Goal',
+      'Restate the goal the model was told not to write, in a paragraph long enough to parse as a real section of the draft reply.',
+      '',
+      '## Acceptance criteria',
+      '- Requests beyond quota return HTTP 429 with a Retry-After header.',
+    ].join('\n');
+    const llm = new FakeLlmClient(() => STRAY_FIRST);
+    const { deps, jira } = makeImproverDeps([issueWithSections()], llm);
+    const payload = await improveIssue(deps, { issueKey: 'RS-3', mode: 'ac-only' });
+    expect(payload.sections).toHaveLength(1);
+    expect(payload.sections[0]?.heading).toBe('Acceptance criteria');
+    const applied = await applyImprovement(deps, {
+      issueKey: 'RS-3',
+      contentHash: payload.contentHash,
+    });
+    expect(applied.newScore).toBe(payload.projectedScore);
+    const written = extractTextFromAdf(jira.updateDescriptionCalls[0]?.description);
+    expect(written).toContain('Requests beyond quota return HTTP 429');
+    expect(written).not.toContain('Restate the goal the model was told not to write');
+    // The issue's own sections survive the merge.
+    expect(written).toContain('Add token-bucket rate limiting');
+    expect(written).toContain('Roll out behind a feature flag first.');
+  });
 });
 
 describe('Improve & Assign (Wave 3)', () => {
@@ -584,5 +610,26 @@ describe('Summary Improve (Wave 3)', () => {
     });
     const { deps } = makeImproverDeps([makeRawMessyIssue()], llm);
     await expect(improveSummary(deps, { issueKey: 'RS-3' })).rejects.toThrow(/not enough text/);
+  });
+
+  it('a cached summary draft reports the LIVE current score, not the draft-time one (A6)', async () => {
+    const llm = new FakeLlmClient((request) =>
+      request.kind === 'summary'
+        ? 'Add token-bucket rate limiting to the public API gateway'
+        : GOOD_MARKDOWN,
+    );
+    const { deps, store } = makeImproverDeps([makeRawMessyIssue()], llm);
+    const first = await improveSummary(deps, { issueKey: 'RS-3' });
+    expect(first.currentScore).toBe(20);
+    // A non-text change: turning the estimate check OFF renormalizes
+    // the live score (20/90 → 22) without touching the summary hash,
+    // so the second call serves the cached draft.
+    await store.saveSettings('RS', {
+      ...DEFAULT_SETTINGS,
+      checksEnabled: { ...DEFAULT_SETTINGS.checksEnabled, estimate: false },
+    });
+    const second = await improveSummary(deps, { issueKey: 'RS-3' });
+    expect(second.fromCache).toBe(true);
+    expect(second.currentScore).toBe(22);
   });
 });

@@ -4,6 +4,7 @@ import {
   getProjectDashboard,
   saveSettings,
   scanProject,
+  settingsFingerprint,
   type ResolverDeps,
 } from '../src/functions/resolver';
 import { FakeJiraAdapter, type RawJiraIssue } from '../src/lib/jira';
@@ -101,5 +102,56 @@ describe('analytics counters (Wave 3)', () => {
     const { deps } = makeDeps([makeRawMessyIssue('RS-3')]);
     const dashboard = await getProjectDashboard(deps, { projectKey: 'RS' });
     expect(dashboard.analytics).toBeUndefined();
+  });
+});
+
+describe('cross-review fixes (Wave 3 review)', () => {
+  it('the settings fingerprint changes when only the exclusions change (A3)', () => {
+    expect(settingsFingerprint({ ...DEFAULT_SETTINGS, excludedStatuses: ['Done'] })).not.toBe(
+      settingsFingerprint(DEFAULT_SETTINGS),
+    );
+    expect(settingsFingerprint({ ...DEFAULT_SETTINGS, excludedIssueTypes: ['Bug'] })).not.toBe(
+      settingsFingerprint(DEFAULT_SETTINGS),
+    );
+  });
+
+  it('excluding an issue also deletes its JQL entity property (B4)', async () => {
+    const { deps, jira, store } = makeDeps([makeRawMessyIssue('RS-3')]);
+    await getIssuePanel(deps, { issueKey: 'RS-3' });
+    expect(jira.setScorePropertyCalls.map((call) => call.issueKey)).toContain('RS-3');
+    await saveSettings(deps, {
+      projectKey: 'RS',
+      settings: { ...DEFAULT_SETTINGS, excludedStatuses: ['To Do'] },
+    });
+    const panel = await getIssuePanel(deps, { issueKey: 'RS-3' });
+    expect(panel.excluded).toBe(true);
+    expect(await store.getScore('RS-3')).toBeUndefined();
+    expect(jira.deleteScorePropertyCalls).toContain('RS-3');
+  });
+
+  it('a sparse panel fetch cannot resurrect an excluded issue score (A11)', async () => {
+    const { deps, store } = makeDeps([makeRawMessyIssue('RS-3')]);
+    await getIssuePanel(deps, { issueKey: 'RS-3' });
+    expect((await store.getScore('RS-3'))?.score).toBe(20);
+    await saveSettings(deps, {
+      projectKey: 'RS',
+      settings: { ...DEFAULT_SETTINGS, excludedStatuses: ['To Do'] },
+    });
+    // The RS-2 incident shape: a single-field edit delivers a sparse
+    // payload. Serve the panel from a second adapter holding only
+    // that skeleton, sharing the same store.
+    const sparse = structuredClone(makeRawMessyIssue('RS-3'));
+    delete sparse.fields.description;
+    delete sparse.fields.assignee;
+    delete sparse.fields.labels;
+    delete sparse.fields.issuelinks;
+    const sparseDeps: ResolverDeps = {
+      jira: new FakeJiraAdapter([sparse]),
+      store,
+      now: () => FIXED_NOW,
+    };
+    const panel = await getIssuePanel(sparseDeps, { issueKey: 'RS-3' });
+    expect(panel.excluded).toBe(true);
+    expect(await store.getScore('RS-3')).toBeUndefined();
   });
 });

@@ -115,6 +115,7 @@ export interface JiraAdapter {
    * and swallow failures — a property write must never fail scoring.
    */
   setScoreProperty(issueKey: string, value: { score: number; grade: string; updatedAt: string }): Promise<void>;
+  deleteScoreProperty(issueKey: string): Promise<void>;
 }
 
 /**
@@ -383,6 +384,7 @@ export class FakeJiraAdapter implements JiraAdapter {
   readonly updateDescriptionCalls: Array<{ issueKey: string; description: AdfDoc }> = [];
   readonly addCommentCalls: Array<{ issueKey: string; body: AdfDoc }> = [];
   readonly setScorePropertyCalls: Array<{ issueKey: string; value: { score: number; grade: string; updatedAt: string } }> = [];
+  readonly deleteScorePropertyCalls: string[] = [];
   /** When set, setScoreProperty throws it (best-effort contract tests). */
   setScorePropertyError: Error | null = null;
   /** Projects the "current user" administers; null = all projects. */
@@ -486,5 +488,9 @@ export class FakeJiraAdapter implements JiraAdapter {
     if (!this.issues.some((candidate) => candidate.key === issueKey)) {
       throw new Error(`FakeJiraAdapter: unknown issue ${issueKey}`);
     }
+  }
+
+  async deleteScoreProperty(issueKey: string): Promise<void> {
+    this.deleteScorePropertyCalls.push(issueKey);
   }
 }

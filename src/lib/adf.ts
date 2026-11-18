@@ -166,6 +166,14 @@ export function mergeAcSectionIntoAdf(input: unknown, acSection: DraftSection): 
     headingNode(acSection.heading, 2),
     ...acSection.paragraphs.map((paragraph) => paragraphNode(paragraph)),
   ];
+  if (typeof input === 'string') {
+    // Legacy plain-string description (cross-review A4): the text is a
+    // real unheaded section, not nothing — keep it and append the AC
+    // section after it instead of destroying the original content.
+    const text = input.trim();
+    if (text.length === 0) return { type: 'doc', version: 1, content: replacement };
+    return { type: 'doc', version: 1, content: [paragraphNode(text), ...replacement] };
+  }
   if (input === null || input === undefined || typeof input !== 'object') {
     return { type: 'doc', version: 1, content: replacement };
   }

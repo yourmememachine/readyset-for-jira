@@ -129,8 +129,28 @@ export function settingsFingerprint(
     checksEnabled: settings.checksEnabled,
     weights: settings.weights,
     improveSections: settings.improveSections,
+    // Wave 3 review A3: the exclusion lists decide whether a record
+    // may exist at all — omitting them let the event cache early-exit
+    // keep a newly excluded issue's record alive indefinitely.
+    excludedIssueTypes: settings.excludedIssueTypes,
+    excludedStatuses: settings.excludedStatuses,
     fieldMap,
   });
+}
+
+/**
+ * Best-effort removal of an excluded issue's JQL entity property
+ * (cross-review B4): the stored record going away is not enough —
+ * the property is what JQL searches and the workflow validators
+ * read. A failure is logged, never thrown: the record is already
+ * deleted, and a later rescore/un-exclusion rewrites the property.
+ */
+export async function clearExcludedProperty(deps: ResolverDeps, issueKey: string): Promise<void> {
+  try {
+    await deps.jira.deleteScoreProperty(issueKey);
+  } catch (err) {
+    console.warn(`ReadySet: could not delete the score property for excluded ${issueKey}:`, err);
+  }
 }
 
 /**
@@ -203,8 +223,10 @@ export async function scoreAndStore(
 ): Promise<StoredScore | null> {
   if (isExcluded(issue, settings)) {
     // An excluded issue keeps no record: delete any score stored
-    // before the exclusion existed so dashboards drop it too.
+    // before the exclusion existed so dashboards drop it too — and
+    // clear its JQL property so searches and validators drop it too.
     await deps.store.deleteScore(issue.key);
+    await clearExcludedProperty(deps, issue.key);
     return null;
   }
   const record = toStoredScore(issue, settings, fieldMap, source, deps.now ? deps.now() : new Date());
@@ -239,6 +261,27 @@ export async function scoreAndStore(
     );
   }
   return record;
+}
+
+/** The panel payload for an excluded issue: no score, and the reason. */
+function excludedPanelPayload(
+  deps: ResolverDeps,
+  issueKey: string,
+  summary: string,
+  statusName: string,
+): IssuePanelPayload {
+  return {
+    issueKey,
+    summary,
+    statusName,
+    score: 0,
+    grade: 'not-ready' as Grade,
+    checks: [],
+    computedAt: (deps.now ? deps.now() : new Date()).toISOString(),
+    fromCache: false,
+    history: [],
+    excluded: true,
+  };
 }
 
 function panelPayload(record: StoredScore, settings: ProjectSettings, fromCache: boolean): IssuePanelPayload {
@@ -285,6 +328,21 @@ export async function getIssuePanel(
     const stored = await deps.store.getScore(payload.issueKey);
     if (stored) {
       const storedSettings = await deps.store.getSettings(stored.projectKey);
+      // Exclusion beats the stored record even on a sparse fetch
+      // (cross-review A11): the sparse branch used to serve the old
+      // score — and keep the record — for an issue the admin had
+      // since excluded. The stored record carries the type/status
+      // the exclusion check needs.
+      if (
+        isExcluded(
+          { issueType: stored.issueType ?? '', statusName: stored.statusName } as NormalizedIssue,
+          storedSettings,
+        )
+      ) {
+        await deps.store.deleteScore(stored.issueKey);
+        await clearExcludedProperty(deps, stored.issueKey);
+        return excludedPanelPayload(deps, stored.issueKey, stored.summary, stored.statusName);
+      }
       return panelPayload(stored, storedSettings, true);
     }
     throw incompleteScoringPayloadError(payload.issueKey, missing);
@@ -295,18 +353,8 @@ export async function getIssuePanel(
     // Excluded issues keep no score (Wave 3): drop any stored record
     // and tell the panel why it shows no score.
     await deps.store.deleteScore(issue.key);
-    return {
-      issueKey: issue.key,
-      summary: issue.summary,
-      statusName: issue.statusName,
-      score: 0,
-      grade: 'not-ready' as Grade,
-      checks: [],
-      computedAt: (deps.now ? deps.now() : new Date()).toISOString(),
-      fromCache: false,
-      history: [],
-      excluded: true,
-    };
+    await clearExcludedProperty(deps, issue.key);
+    return excludedPanelPayload(deps, issue.key, issue.summary, issue.statusName);
   }
   const cached = await deps.store.getScore(issue.key);
   if (

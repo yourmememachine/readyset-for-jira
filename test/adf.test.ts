@@ -213,6 +213,16 @@ describe('sectionsFromAdf + mergeAcSectionIntoAdf (Wave 3)', () => {
     expect(sections.map((section) => section.heading)).toEqual(['Goal', 'Acceptance criteria']);
   });
 
+  it('preserves a legacy string description instead of destroying it (A4)', () => {
+    const merged = mergeAcSectionIntoAdf('Original legacy description text that matters.', {
+      heading: 'Acceptance criteria',
+      paragraphs: ['New criterion.'],
+    });
+    const text = extractTextFromAdf(merged);
+    expect(text).toContain('Original legacy description text that matters.');
+    expect(text).toContain('New criterion.');
+  });
+
   it('an empty doc becomes just the AC section', () => {
     const merged = mergeAcSectionIntoAdf(null, {
       heading: 'Acceptance criteria',

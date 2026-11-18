@@ -9,7 +9,7 @@
  * (DESIGN.md §5.1). `src/index.ts` binds them to the manifest's
  * action functions; tests drive them with the in-memory store.
  */
-import { computeProjectStats } from '../lib/aggregate';
+import { computeProjectStats, isOpen } from '../lib/aggregate';
 import { gradeForScore, projectedScoreIfFixed } from '../lib/rubric';
 import type { ScanStatus } from '../lib/store';
 import type { CheckResult, Grade } from '../lib/types';
@@ -89,7 +89,7 @@ export async function fetchProjectReadiness(
 ): Promise<ProjectReadinessResult> {
   const records = await deps.store.getProjectScores(payload.projectKey);
   const settings = await deps.store.getSettings(payload.projectKey);
-  const stats = computeProjectStats(payload.projectKey, records, settings, 5);
+  const stats = computeProjectStats(payload.projectKey, records.filter(isOpen), settings, 5);
   const scanState = await deps.store.getScanState(payload.projectKey);
   return {
     projectKey: payload.projectKey,
@@ -149,7 +149,7 @@ export async function fetchSuggestedFixes(
 ): Promise<SuggestedFixesResult> {
   const records = await deps.store.getProjectScores(payload.projectKey);
   const settings = await deps.store.getSettings(payload.projectKey);
-  const stats = computeProjectStats(payload.projectKey, records, settings, 1);
+  const stats = computeProjectStats(payload.projectKey, records.filter(isOpen), settings, 1);
   const worst = stats.worstOffenders[0];
   if (!worst) return { found: false, projectKey: payload.projectKey };
   const fixes = worst.checks
@@ -240,7 +240,7 @@ export async function fetchFixFirst(
   );
   const records = await deps.store.getProjectScores(payload.projectKey);
   const settings = await deps.store.getSettings(payload.projectKey);
-  const stats = computeProjectStats(payload.projectKey, records, settings, limit);
+  const stats = computeProjectStats(payload.projectKey, records.filter(isOpen), settings, limit);
   return {
     projectKey: payload.projectKey,
     issues: stats.worstOffenders.map((record) => ({

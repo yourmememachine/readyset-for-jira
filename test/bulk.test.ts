@@ -4,6 +4,7 @@ import type { ImproverDeps } from '../src/functions/improver';
 import { scanProject } from '../src/functions/resolver';
 import { FakeJiraAdapter, type RawJiraIssue } from '../src/lib/jira';
 import type { LlmClient } from '../src/lib/llm';
+import { DEFAULT_SETTINGS } from '../src/lib/rubric-config';
 import { InMemoryKV, ScoreStore } from '../src/lib/store';
 import { makeRawIssue, makeRawIssueNoEstimate, makeRawMessyIssue } from './fixtures';
 
@@ -59,5 +60,30 @@ describe('bulkImproveTemplates (Wave 3)', () => {
     for (const entry of results) {
       expect(entry.error).toContain('do not have permission');
     }
+  });
+});
+
+describe('bulkImproveTemplates — cross-review guards (Wave 3 review)', () => {
+  it('skips an issue excluded after it was scored, and writes nothing to it (A2)', async () => {
+    const { deps, jira, store } = await makeSeededDeps([makeRawMessyIssue()]);
+    await store.saveSettings('RS', { ...DEFAULT_SETTINGS, excludedIssueTypes: ['Story'] });
+    const { results } = await bulkImproveTemplates(deps, { projectKey: 'RS' });
+    expect(results).toHaveLength(1);
+    expect(results[0]?.issueKey).toBe('RS-3');
+    expect(results[0]?.skipped).toMatch(/Excluded/);
+    expect(jira.updateDescriptionCalls).toHaveLength(0);
+  });
+
+  it('skips an issue whose LIVE score is already Ready despite a stale-low record (A7)', async () => {
+    const { deps, jira, store } = await makeSeededDeps([makeRawIssue()]);
+    const stored = await store.getScore('RS-1');
+    expect(stored?.score).toBe(100);
+    // Simulate the missed-event staleness this codebase has seen in
+    // production: the record says 20, the live issue scores 100.
+    await store.saveScore({ ...stored!, score: 20, grade: 'not-ready' });
+    const { results } = await bulkImproveTemplates(deps, { projectKey: 'RS' });
+    expect(results).toHaveLength(1);
+    expect(results[0]?.skipped).toMatch(/Already Ready at 100/);
+    expect(jira.updateDescriptionCalls).toHaveLength(0);
   });
 });

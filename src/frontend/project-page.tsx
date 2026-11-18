@@ -351,11 +351,12 @@ function BulkImproveSection({
     <Stack space="space.100">
       <Inline space="space.100" alignBlock="center">
         <Button onClick={() => void run()} isDisabled={running}>
-          {running ? 'Improving…' : 'Improve 5 lowest (template)'}
+          {running ? 'Improving…' : 'Improve 3 lowest (template)'}
         </Button>
         <Text>
-          Applies the built-in template draft to the five lowest-scoring open issues — the same
-          checked Apply path as the panel, one click.
+          Applies the built-in template draft to the three lowest-scoring open issues — the same
+          checked Apply path as the panel, one click. Each issue also needs your Edit issues
+          permission, and issues excluded in the settings above are skipped.
         </Text>
       </Inline>
       {error ? (
@@ -372,7 +373,9 @@ function BulkImproveSection({
               <Text key={entry.issueKey}>
                 {entry.error
                   ? `${entry.issueKey}: could not be improved — ${entry.error}`
-                  : `${entry.issueKey}: readiness ${entry.previousScore} → ${entry.newScore}`}
+                  : entry.skipped
+                    ? `${entry.issueKey}: skipped — ${entry.skipped}`
+                    : `${entry.issueKey}: readiness ${entry.previousScore} → ${entry.newScore}`}
               </Text>
             ))}
           </Stack>
@@ -522,7 +525,7 @@ function ProjectPageApp() {
             </Inline>
             {data.analytics ? (
               <Text>
-                {`Last 7 days in this site: ${data.analytics.scores} scores computed · ${data.analytics.drafts} drafts generated · ${data.analytics.applies} improvements applied.`}
+                {`Usage counters, last 7 days in this site (approximate — automatic rescans count too): ${data.analytics.scores} scores computed · ${data.analytics.drafts} drafts generated · ${data.analytics.applies} improvements applied.`}
               </Text>
             ) : null}
             <Heading size="small">Lowest-scoring open issues</Heading>

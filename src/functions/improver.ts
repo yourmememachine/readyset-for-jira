@@ -133,6 +133,17 @@ export function improvementContentHash(
 }
 
 /** Hash for summary suggestions (Wave 3): summary + the text it derives from. */
+/**
+ * The acceptance-criteria section of a draft, selected by heading —
+ * never by position. The LLM parser tolerates preamble and extra
+ * sections, so an AC-only draft's sections are NOT guaranteed to
+ * start with the criteria; taking sections[0] merged the wrong text
+ * into live descriptions (cross-review A1/B2).
+ */
+export function selectAcSection(sections: DraftSection[]): DraftSection | undefined {
+  return sections.find((section) => /^acceptance criteria\b/i.test(section.heading.trim()));
+}
+
 export function summaryContentHash(issue: NormalizedIssue): string {
   const material = JSON.stringify({
     v: RUBRIC_VERSION,
@@ -241,13 +252,23 @@ export async function draftForIssue(
         sections: settings.improveSections,
         mode,
       });
-      sections =
-        mode === 'ac-only'
-          ? parseDraftMarkdown(markdown, [
-              settings.improveSections.find((name) => /^acceptance criteria\b/i.test(name)) ??
-                'Acceptance criteria',
-            ])
-          : parseDraftMarkdown(markdown, settings.improveSections);
+      if (mode === 'ac-only') {
+        const parsed = parseDraftMarkdown(markdown, [
+          settings.improveSections.find((name) => /^acceptance criteria\b/i.test(name)) ??
+            'Acceptance criteria',
+        ]);
+        // Select the criteria section by heading, never by position:
+        // the parser tolerates preamble and extra sections, and
+        // merging sections[0] wrote the wrong text live (A1/B2). No
+        // AC section in the reply → throw → template fallback.
+        const ac = selectAcSection(parsed);
+        if (!ac) {
+          throw new Error('ReadySet: LLM ac-only reply had no acceptance-criteria section');
+        }
+        sections = [ac];
+      } else {
+        sections = parseDraftMarkdown(markdown, settings.improveSections);
+      }
       source = 'llm';
     } catch (err) {
       // LLM unavailable / errored / unusable reply: the deterministic
@@ -301,7 +322,7 @@ export async function improveIssue(
   }
   const mode = payload.mode ?? 'full';
   const { draft, fromCache } = await draftForIssue(deps, issue, settings, { mode });
-  const acSection = draft.sections[0];
+  const acSection = selectAcSection(draft.sections) ?? draft.sections[0];
   return {
     issueKey: issue.key,
     canApply: await canUserEditIssues(deps, issue.projectKey),
@@ -348,6 +369,14 @@ export async function applyImprovement(
       'This issue changed since the draft was generated. Run Improve again to refresh the draft.',
     );
   }
+  // Exclusion gate at the single write path (cross-review A2): every
+  // caller — panel, bulk — funnels through here, so an issue excluded
+  // after its draft was generated can never be written by Apply.
+  if (isExcluded(issue, settings)) {
+    throw new Error(
+      'This issue is excluded from ReadySet scoring by the project settings, so the draft cannot be applied.',
+    );
+  }
   // Governance gate (Wave 2): the write runs as the app, but Apply is
   // only offered to — and only honoured for — users who themselves
   // hold Edit issues in the project.
@@ -362,7 +391,7 @@ export async function applyImprovement(
   // AC-only draft merges its section into the live description —
   // everything else the author wrote stays untouched.
   if (mode === 'ac-only') {
-    const acSection = draft.sections[0];
+    const acSection = selectAcSection(draft.sections) ?? draft.sections[0];
     if (!acSection) throw new Error('The draft for this issue is no longer available. Run Improve again.');
     await deps.jira.updateDescription(
       payload.issueKey,
@@ -500,7 +529,10 @@ export async function improveSummary(
     fromCache,
     currentSummary: issue.summary,
     suggestedSummary: draft.summary,
-    currentScore: draft.scoreAtDraft,
+    // The LIVE score, not the draft-time one: a cached draft's
+    // scoreAtDraft goes stale on any non-text change (estimate,
+    // assignee) because the summary hash covers text only (A6).
+    currentScore: scored.score,
     projectedScore: scoreIssue({ ...issue, summary: draft.summary }, settings).score,
   };
 }
@@ -522,6 +554,11 @@ export async function applySummary(
   if (summaryContentHash(issue) !== payload.contentHash) {
     throw new Error(
       'This issue changed since the draft was generated. Run Improve again to refresh the draft.',
+    );
+  }
+  if (isExcluded(issue, settings)) {
+    throw new Error(
+      'This issue is excluded from ReadySet scoring by the project settings, so the draft cannot be applied.',
     );
   }
   if (!(await canUserEditIssues(deps, issue.projectKey))) {

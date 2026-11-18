@@ -308,7 +308,7 @@ describe('normalizeSettings Wave 3 fields', () => {
   it('normalizes exclusion lists: trims, dedupes case-insensitively, drops junk', () => {
     const merged = normalizeSettings(
       {
-        excludedIssueTypes: [' Bug ', 'bug', '', 'x'.repeat(41), 'Task'],
+        excludedIssueTypes: [' Bug ', 'bug', '', 'x'.repeat(81), 'Task'],
         excludedStatuses: ['Done'],
         donePolicy: 'include',
         analyticsEnabled: true,

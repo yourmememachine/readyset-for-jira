@@ -218,4 +218,17 @@ export class ForgeJiraAdapter implements JiraAdapter {
     );
     await assertOk(response, `setScoreProperty(${issueKey})`);
   }
+
+  async deleteScoreProperty(issueKey: string): Promise<void> {
+    // DELETE the same property (cross-review B4): when an issue becomes
+    // excluded, its stored score is deleted — the JQL-indexed property
+    // must go too, or JQL and the workflow validators keep enforcing a
+    // grade the app no longer stands behind. 204 on success; a missing
+    // property also returns 204 in Jira, so this is idempotent.
+    const response = await this.requester().requestJira(
+      route`/rest/api/3/issue/${issueKey}/properties/readyset`,
+      { method: 'DELETE', headers: { Accept: 'application/json' } },
+    );
+    await assertOk(response, `deleteScoreProperty(${issueKey})`);
+  }
 }

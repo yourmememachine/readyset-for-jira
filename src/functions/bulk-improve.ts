@@ -12,16 +12,21 @@
 import { isScoreablePayload, missingScoringFields, normalizeIssue } from '../lib/jira';
 import { isOpen } from '../lib/aggregate';
 import { applyImprovement, draftForIssue, type ImproverDeps } from './improver';
-import { canAdminister, getEffectiveFieldMap } from './resolver';
+import { canAdminister, getEffectiveFieldMap, isExcluded } from './resolver';
 
 export interface BulkImproveResult {
   issueKey: string;
   previousScore?: number;
   newScore?: number;
   error?: string;
+  skipped?: string;
 }
 
-const BULK_LIMIT = 5;
+// Three, not five (cross-review B1): each issue costs ~16 sequential
+// Jira/KVS round trips inside ONE resolver invocation, and Forge caps
+// those at 25 seconds — a five-issue batch on a slow site could be
+// killed mid-write. Three keeps the batch comfortably inside the cap.
+const BULK_LIMIT = 3;
 
 export async function bulkImproveTemplates(
   deps: ImproverDeps,
@@ -47,7 +52,23 @@ export async function bulkImproveTemplates(
         );
       }
       const issue = normalizeIssue(raw, fieldMap);
+      if (isExcluded(issue, settings)) {
+        // Excluded after it was scored (cross-review A2): bulk honours
+        // the exclusion exactly like the panel does.
+        results.push({ issueKey: candidate.issueKey, skipped: 'Excluded by the project settings.' });
+        continue;
+      }
       const { draft } = await draftForIssue(deps, issue, settings, { templateOnly: true });
+      if (draft.scoreAtDraft >= settings.readyThreshold) {
+        // The stored record was stale-low; the LIVE issue is already
+        // Ready (cross-review A7). Never rewrite a healthy issue on a
+        // stale record's say-so.
+        results.push({
+          issueKey: candidate.issueKey,
+          skipped: `Already Ready at ${draft.scoreAtDraft} — the stored score was out of date.`,
+        });
+        continue;
+      }
       const applied = await applyImprovement(deps, {
         issueKey: candidate.issueKey,
         contentHash: draft.contentHash,

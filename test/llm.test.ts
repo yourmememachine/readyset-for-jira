@@ -147,4 +147,13 @@ describe('parseSummaryReply (Wave 3)', () => {
     expect(() => parseSummaryReply('short')).toThrow(/not a usable/);
     expect(() => parseSummaryReply('x'.repeat(300))).toThrow(/not a usable/);
   });
+
+  it('skips a model preamble and returns the actual summary line (A5)', () => {
+    expect(
+      parseSummaryReply(
+        'Here is a summary for the issue:\nAdd token-bucket rate limiting to the API gateway',
+      ),
+    ).toBe('Add token-bucket rate limiting to the API gateway');
+    expect(() => parseSummaryReply('Here is a summary for the issue:')).toThrow(/not a usable/);
+  });
 });

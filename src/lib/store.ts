@@ -151,7 +151,9 @@ export function normalizeStringList(input: unknown, base: string[]): string[] {
   for (const candidate of input) {
     if (typeof candidate !== 'string') continue;
     const value = candidate.trim();
-    if (value.length === 0 || value.length > 40) continue;
+    // 80 chars: real Jira status names can run long, and a dropped
+    // entry silently un-excludes an issue (cross-review A15).
+    if (value.length === 0 || value.length > 80) continue;
     const key = value.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);

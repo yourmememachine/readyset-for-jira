@@ -6,9 +6,9 @@ import {
   fetchProjectReadiness,
   fetchSuggestedFixes,
 } from '../src/functions/actions';
-import { scanProject, type ResolverDeps } from '../src/functions/resolver';
-import { FakeJiraAdapter, type RawJiraIssue } from '../src/lib/jira';
-import { CHECK_LABELS } from '../src/lib/rubric-config';
+import { scanProject, scoreAndStore, type ResolverDeps } from '../src/functions/resolver';
+import { DEFAULT_FIELD_MAP, FakeJiraAdapter, normalizeIssue, type RawJiraIssue } from '../src/lib/jira';
+import { CHECK_LABELS, DEFAULT_SETTINGS } from '../src/lib/rubric-config';
 import { InMemoryKV, ScoreStore } from '../src/lib/store';
 import { makeRawIssue, makeRawIssueNoEstimate, makeRawMessyIssue } from './fixtures';
 
@@ -170,5 +170,31 @@ describe('fetchCompareIssues (Wave 3)', () => {
     const result = await fetchCompareIssues(deps, { issueKeyA: 'RS-1', issueKeyB: 'RS-404' });
     expect(result.found).toBe(false);
     expect(result.missing).toEqual(['RS-404']);
+  });
+});
+
+describe('Coach actions stay open-only under the Done policy (B9)', () => {
+  it('suggested fixes never nominate a Done issue, even when include is on', async () => {
+    const done = makeRawMessyIssue('RS-4');
+    done.fields.status = { name: 'Done', statusCategory: { key: 'done' } };
+    // RS-4 (Done) cannot be scan-seeded — scans skip Done by design —
+    // so score it the other production way: an issue event/panel path
+    // stores records for Done issues opened directly. Seed it via a
+    // manual record through the same store the scan uses.
+    const { deps, store } = await makeSeededDeps([makeRawIssue(), makeRawIssueNoEstimate()]);
+    await scoreAndStore(
+      deps,
+      normalizeIssue(done, DEFAULT_FIELD_MAP),
+      DEFAULT_SETTINGS,
+      DEFAULT_FIELD_MAP,
+      'event',
+    );
+    await store.saveSettings('RS', { ...DEFAULT_SETTINGS, donePolicy: 'include' });
+    const result = await fetchSuggestedFixes(deps, { projectKey: 'RS' });
+    expect(result.found).toBe(true);
+    // The worst OPEN issue is RS-2 (90); the Done RS-4 (20) must not win.
+    expect(result.issueKey).toBe('RS-2');
+    const fixFirst = await fetchFixFirst(deps, { projectKey: 'RS' });
+    expect(fixFirst.issues.map((issue) => issue.issueKey)).not.toContain('RS-4');
   });
 });

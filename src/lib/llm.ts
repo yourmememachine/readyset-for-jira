@@ -220,13 +220,29 @@ const SUMMARY_PLACEHOLDER_RE = /\b(tbd|todo|fixme|placeholder)\b/i;
  * specific length, no placeholders, no markdown dressing. Throws on
  * anything else so the caller falls back to the derived template.
  */
+const SUMMARY_PREAMBLE_RE =
+  /^(here is|here's|here you go|sure|certainly|of course|summary|suggested summary|proposed summary|new summary)\b/i;
+
 export function parseSummaryReply(reply: string): string {
-  const line = reply
+  // Models sometimes preface the line ("Here is a summary for the
+  // issue:") despite the prompt. A preamble is never the summary:
+  // skip label-style lines and anything ending in a colon, then take
+  // the first usable line (cross-review A5).
+  const lines = reply
     .split('\n')
-    .map((candidate) => candidate.trim())
-    .find((candidate) => candidate.length > 0);
-  if (!line) throw new Error('ReadySet: LLM summary reply was empty');
-  const cleaned = line.replace(/^#+\s*/, '').replace(/^["']|["']$/g, '').trim();
+    .map((candidate) =>
+      candidate
+        .trim()
+        .replace(/^#+\s*/, '')
+        .replace(/^["']|["']$/g, '')
+        .trim(),
+    )
+    .filter((candidate) => candidate.length > 0);
+  if (lines.length === 0) throw new Error('ReadySet: LLM summary reply was empty');
+  const usable = lines.find(
+    (candidate) => !SUMMARY_PREAMBLE_RE.test(candidate) && !/:$/.test(candidate),
+  );
+  const cleaned = usable ?? '';
   if (cleaned.length < 10 || cleaned.length > 255) {
     throw new Error('ReadySet: LLM summary reply is not a usable one-line summary');
   }

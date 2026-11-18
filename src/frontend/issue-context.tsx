@@ -141,7 +141,16 @@ function ImproveSection({
       const draft = state.draft;
       if (!draft) return null;
       const applying = state.phase === 'applying';
-      const diffs = diffSections(draft.currentSections, draft.sections);
+      // AC-only Apply MERGES: every other section stays untouched, so
+      // the generic diff (which would brand kept sections "removed")
+      // must not run in this mode — diff only the criteria section
+      // and say plainly that the rest is unchanged (cross-review B3).
+      const acOnly = draft.mode === 'ac-only';
+      const diffs = acOnly
+        ? diffSections(draft.currentSections, draft.sections).filter(
+            (diff) => diff.status !== 'removed',
+          )
+        : diffSections(draft.currentSections, draft.sections);
       const DIFF_APPEARANCE: Record<SectionDiffStatus, 'success' | 'removed' | 'inprogress' | 'default'> = {
         added: 'success',
         removed: 'removed',
@@ -162,12 +171,18 @@ function ImproveSection({
               </Text>
               {diffs.length > 0 ? (
                 <Inline space="space.050">
-                  {diffs.map((diff) => (
-                    <Lozenge key={diff.heading} appearance={DIFF_APPEARANCE[diff.status]}>
+                  {diffs.map((diff, diffIndex) => (
+                    <Lozenge
+                      key={`${diff.heading}-${diffIndex}`}
+                      appearance={DIFF_APPEARANCE[diff.status]}
+                    >
                       {`${diff.heading || 'Intro'}: ${diff.status}`}
                     </Lozenge>
                   ))}
                 </Inline>
+              ) : null}
+              {acOnly ? (
+                <Text>Only this section changes — everything else in the description stays exactly as it is.</Text>
               ) : null}
               {draft.sections.map((section, index) => (
                 <Box key={`${section.heading}-${index}`}>
