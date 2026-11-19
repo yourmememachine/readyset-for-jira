@@ -1,0 +1,69 @@
+name: Deploy ReadySet (Forge)
+
+# Manual trigger ONLY. A deploy runs when this workflow is explicitly
+# started from the Actions tab — never on push, never on a schedule.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Same non-interactive env recipe as the local deploys
+# (WAR-ROOM-READYSET.md §5 / BUILD-LOG.md): env auth, no stored
+# credentials, no interactive prompts. The API token lives only in the
+# FORGE_API_TOKEN repo secret; it is never printed or written to disk.
+env:
+  XDG_CONFIG_HOME: /tmp/forge-config
+  FORGE_DISABLE_ANALYTICS: "1"
+  FORGE_EMAIL: tdilip2501@gmail.com
+  FORGE_API_TOKEN: ${{ secrets.FORGE_API_TOKEN }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the app
+        uses: actions/checkout@v4
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run the test suite
+        run: npm test
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # Pinned to the version used for every local deploy. Installed
+      # with --ignore-scripts, same as the local install (BUILD-LOG.md):
+      # the native keytar build is unnecessary — auth is via env vars.
+      - name: Install Forge CLI 15.1.0
+        run: npm install -g --ignore-scripts @forge/cli@15.1.0
+
+      # Deploy sequence mirrors the local deploys exactly:
+      # forge lint, then deploy development, then deploy production.
+      # (Never `forge install --upgrade`.)
+      - name: Forge lint
+        run: forge lint
+
+      - name: Deploy to development
+        run: |
+          set -o pipefail
+          forge deploy -e development 2>&1 | tee deploy-development.log
+          VERSION=$(grep -oiE 'version[^0-9]*[0-9]+\.[0-9]+\.[0-9]+' deploy-development.log | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)
+          echo "Deployed development version: ${VERSION:-not found in forge output — see the deploy log above}"
+          echo "Development version: ${VERSION:-unknown}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Deploy to production
+        run: |
+          set -o pipefail
+          forge deploy -e production 2>&1 | tee deploy-production.log
+          VERSION=$(grep -oiE 'version[^0-9]*[0-9]+\.[0-9]+\.[0-9]+' deploy-production.log | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)
+          echo "Deployed production version: ${VERSION:-not found in forge output — see the deploy log above}"
+          echo "Production version: ${VERSION:-unknown}" >> "$GITHUB_STEP_SUMMARY"
