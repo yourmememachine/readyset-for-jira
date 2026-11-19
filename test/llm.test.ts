@@ -164,7 +164,7 @@ describe('parseSummaryReply (Wave 3)', () => {
   });
 });
 
-describe('war-room LLM parsing fixes (2026-11-18)', () => {
+describe('LLM parsing fixes (2026-11-18)', () => {
   const FULL_DRAFT = [
     '## Goal',
     'Add token-bucket rate limiting to the public API gateway so that a single noisy integration cannot degrade latency for every other merchant on the platform.',

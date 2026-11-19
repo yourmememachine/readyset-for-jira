@@ -89,7 +89,7 @@ export interface ApplyPayload {
   source: DraftSource;
   /**
    * Set when the Jira write landed but a confirmation step after it
-   * (re-read, rescore, audit comment) failed (war-room B1). The apply
+   * (re-read, rescore, audit comment) failed (B1). The apply
    * SUCCEEDED — this is a warning, not an error, and the UI must not
    * offer a retry of a write that already happened. When the rescore
    * itself failed, `newScore` repeats `previousScore` (unconfirmed).
@@ -149,7 +149,7 @@ export function improvementContentHash(
  * into live descriptions (cross-review A1/B2).
  */
 /**
- * Heading comparison normalizer (war-room round 2, F-5): numbering,
+ * Heading comparison normalizer (round 2, F-5): numbering,
  * bold markers and a trailing colon are presentation, not identity —
  * the same canonicalization parseDraftMarkdown applies to the
  * headings it stores, applied here to both sides of the comparison
@@ -384,7 +384,7 @@ export async function improveIssue(
   }
   const mode = payload.mode ?? 'full';
   const { draft, fromCache } = await draftForIssue(deps, issue, settings, { mode });
-  // Selected by heading, never by position (war-room B2 hardening:
+  // Selected by heading, never by position (B2 hardening:
   // the old `?? draft.sections[0]` fallback is gone — construction
   // guarantees an AC-headed section in an ac-only draft, and a draft
   // without one is corrupt, not a cue to project the wrong section).
@@ -485,7 +485,7 @@ export async function applyImprovement(
   // everything else the author wrote stays untouched.
   if (mode === 'ac-only') {
     // By heading, never by position — and no positional fallback
-    // (war-room B2): a stored draft with no AC-headed section is
+    // (B2): a stored draft with no AC-headed section is
     // corrupt; refuse it rather than merge whatever section is first
     // into the description as if it were the criteria.
     const acSection = selectAcSection(draft.sections);
@@ -526,7 +526,7 @@ export async function applyImprovement(
 
   // The write has landed. Everything below is confirmation — the
   // re-read, the rescore, the audit comment — and a failure there
-  // must never be reported as an Apply failure (war-room B1): the
+  // must never be reported as an Apply failure (B1): the
   // description HAS changed, and presenting a retryable error sends
   // the user into a retry the stale-hash check will refuse (their
   // own write changed the issue). Post-write failures therefore ride
@@ -582,7 +582,7 @@ export async function applyImprovement(
     if (settings.analyticsEnabled) {
       await deps.store.incrementAnalytics(issue.projectKey, 'applies', deps.now ? deps.now() : new Date());
     }
-    // The draft is consumed (war-room B22): its hash is stale by
+    // The draft is consumed (B22): its hash is stale by
     // construction now, and leaving it in KVS only orphans it.
     await deps.store.deleteDraft(payload.issueKey, payload.contentHash);
   } catch (err) {
@@ -731,7 +731,7 @@ export async function applySummary(
   }
   await deps.jira.updateSummary(payload.issueKey, draft.summary);
   // Post-write confirmation, guarded exactly as in applyImprovement
-  // (war-room B1): the summary HAS changed, so a re-read or comment
+  // (B1): the summary HAS changed, so a re-read or comment
   // failure returns success with a warning, never a retryable error.
   let record: { score: number; checks: CheckResult[] } | null = null;
   let postWriteWarning: string | undefined;

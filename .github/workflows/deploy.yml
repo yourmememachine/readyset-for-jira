@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 # Same non-interactive env recipe as the local deploys
-# (WAR-ROOM-READYSET.md §5 / BUILD-LOG.md): env auth, no stored
+# (deploy notes on file): env auth, no stored
 # credentials, no interactive prompts. The API token lives only in the
 # FORGE_API_TOKEN repo secret; it is never printed or written to disk.
 env:

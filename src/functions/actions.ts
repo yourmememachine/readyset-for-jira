@@ -161,7 +161,7 @@ export async function fetchProjectReadiness(
   }
   const records = visible;
   const settings = await deps.store.getSettings(payload.projectKey);
-  // Project readiness passes the records unfiltered (war-room B20):
+  // Project readiness passes the records unfiltered (B20):
   // computeProjectStats applies the project's Done policy itself,
   // and pre-filtering silently overrode `donePolicy: 'include'` on
   // this surface — the Coach counted a different population than the
@@ -294,7 +294,7 @@ export async function fetchCompareIssues(
   if (missing.length > 0) return { found: false, missing };
   const aById = new Map((a.checks ?? []).map((check) => [check.id, check]));
   const bById = new Map((b.checks ?? []).map((check) => [check.id, check]));
-  // Differences over the UNION of both checklists (war-room B21):
+  // Differences over the UNION of both checklists (B21):
   // iterating A's checks only hid a check that exists solely on B —
   // repro-steps on a Bug compared against a Story is exactly the
   // check that explains the score gap. A check one issue does not

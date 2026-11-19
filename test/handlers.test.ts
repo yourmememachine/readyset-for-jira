@@ -382,7 +382,7 @@ describe('rescan and scheduled rescan', () => {
       makeRawIssue({}, `RS-${index + 1}`),
     );
     const { deps, store } = makeDeps(issues);
-    // UI-origin checkpoint (war-room B8 split): a manual rescan is a
+    // UI-origin checkpoint (B8 split): a manual rescan is a
     // UI flow and seeds/resumes/clears the `rescan-ui:` key only.
     await store.setScanCheckpoint(
       'RS',
@@ -851,7 +851,7 @@ describe('upgrade cross-review fixes (A1 event type gate, B2 property skip)', ()
   });
 });
 
-describe('war-room fixes (2026-11-18)', () => {
+describe('fixes (2026-11-18)', () => {
   it('F1: a failed property write is retried on the next panel open even when the score is unchanged', async () => {
     const { deps, jira, store } = makeDeps([makeRawIssue()]);
     jira.setScorePropertyError = new Error('property PUT failed');

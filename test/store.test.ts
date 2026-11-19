@@ -131,7 +131,7 @@ describe('ScoreStore', () => {
     await store.setSeenShard('RS', 'app', 1, ['RS-2']);
     expect(await store.getScanCheckpoint('RS')).toEqual(manifest);
     expect(await store.getSeenUnion('RS', 'app', 2)).toEqual(new Set(['RS-1', 'RS-2']));
-    // Origins never share state (war-room B8).
+    // Origins never share state (B8).
     expect(await store.getScanCheckpoint('RS', 'ui')).toBeUndefined();
     await store.clearScanCheckpoint('RS', 'app', 2);
     expect(await store.getScanCheckpoint('RS')).toBeUndefined();

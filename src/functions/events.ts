@@ -136,7 +136,7 @@ export async function handleIssueEvent(
     return { handled: false };
   }
 
-  // Known-project gate (war-room round 2, D9): the trigger fires for
+  // Known-project gate (round 2, D9): the trigger fires for
   // every issue event on the SITE, but ReadySet only tracks projects
   // it has been used on (the roster). An event for any other project
   // is ignored before it can trigger a refetch or a KVS write. The
@@ -215,7 +215,7 @@ export async function handleIssueEvent(
   ) {
     if (cached.propertySynced !== true) {
       // The record is fresh but its entity property never landed
-      // (war-room A1): the early-exit must not freeze the JQL mirror
+      // (A1): the early-exit must not freeze the JQL mirror
       // in its failed state — retry the write on this event, which
       // already paid for the payload. The flip is conditional
       // (round 2, F-13).

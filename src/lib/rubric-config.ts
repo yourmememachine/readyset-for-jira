@@ -12,7 +12,7 @@ import type { CheckId, ProjectSettings } from './types';
  * `todo` needs marker context; summary tokens are deduplicated.
  * v3 (upgrade pack): bug-type issues gain the `repro-steps` check
  * (excluded from scoring for every other issue type).
- * v4 (war-room round 2): meaningful-content tests are conjunctive;
+ * v4 (round 2): meaningful-content tests are conjunctive;
  * the description check gains a distinct-token floor; placeholder
  * matching normalizes zero-width/punctuation/homoglyph evasions;
  * repro credit requires transcribed evidence, never template

@@ -120,7 +120,7 @@ const HARD_BREAK_SENTINEL = '\u0001';
 function nodePlainText(node: AdfNode): string {
   const parts: string[] = [];
   nodeText(node, parts, HARD_BREAK_SENTINEL);
-  // Block boundaries are sentence boundaries (war-room B17): list
+  // Block boundaries are sentence boundaries (B17): list
   // items inside one node were glued into a single run-on line
   // ("User can log in Error is shown"), which the summary deriver
   // then served as one sentence. A break after sentence punctuation

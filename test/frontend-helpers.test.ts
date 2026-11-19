@@ -231,7 +231,7 @@ describe('diffSections (Wave 3 diff view)', () => {
   });
 });
 
-describe('war-room frontend fixes (2026-11-18)', () => {
+describe('frontend fixes (2026-11-18)', () => {
   it('C4: the summary not-enough-text refusal passes through verbatim instead of a retry offer', () => {
     const message = toImproveMessage(
       new Error(

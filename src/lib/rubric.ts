@@ -48,12 +48,12 @@ const ACCEPTANCE_CRITERIA_RE = /acceptance criteria/i;
 /**
  * A line that opens an acceptance-criteria section. Two shapes count —
  * a markdown heading (hash marks present), or a plain label line. The
- * phrase may carry ONE qualifier tail (war-room round 2, F-9):
+ * phrase may carry ONE qualifier tail (round 2, F-9):
  * "for|on|of" + up to 3 words, a dash + up to 3 words, or a
  * parenthetical — "Acceptance criteria for login:" is a heading. But
  * a prose sentence that merely begins with the words ("Acceptance
  * criteria are not yet written — the PM will add them Friday") is NOT
- * a heading (war-room B16): after the optional qualifier the line
+ * a heading (B16): after the optional qualifier the line
  * must end or continue with a colon — arbitrary trailing prose is a
  * sentence, not a section label. The round-1 markdown shape captured
  * any trailing text as an inline body, which made the B16 sentence a
@@ -92,7 +92,7 @@ function result(
 function checkDescription(issue: NormalizedIssue): CheckResult {
   const text = issue.descriptionText.trim();
   const length = text.length;
-  // Distinct-token floor (war-room round 2, E #8): length alone is
+  // Distinct-token floor (round 2, E #8): length alone is
   // gameable — 280 characters of repeated gibberish passed. A real
   // description uses vocabulary; ≥30 distinct tokens (length ≥2)
   // alongside the character floor is the conjunctive test.
@@ -141,7 +141,7 @@ function hasMeaningfulContent(text: string): boolean {
     .replace(/to be (decided|determined|confirmed)/gi, ' ');
   const cjkCount = (withoutMarkers.match(CJK_CHAR_RE) ?? []).length;
   if (cjkCount >= 8) return true;
-  // Unicode letters/digits (war-room B14): stripping everything but
+  // Unicode letters/digits (B14): stripping everything but
   // a-z0-9 made non-English content fail by construction.
   const strippedLength = withoutMarkers.replace(/[^\p{L}\p{N}]+/gu, '').length;
   if (strippedLength < 8) return false;
@@ -307,7 +307,7 @@ function isTodoMarker(text: string, index: number, match: string): boolean {
 
 /**
  * Is this "todo list" / "to-do list" occurrence the product noun
- * rather than a marker (war-room round 2, F-8)? The prose reading
+ * rather than a marker (round 2, F-8)? The prose reading
  * applies ONLY when the token is not all-caps AND the same-line
  * remainder after "list" is non-empty and does not start with a
  * colon: "Todo list sharing is broken" is prose, but "TODO list:
@@ -389,7 +389,7 @@ function findPlaceholder(text: string): string | null {
 /**
  * Whether a text carries an unresolved placeholder marker, under the
  * exact rules the no-placeholders check applies. Exported for the
- * Improve draft parser (war-room C5): an LLM draft containing "TBD"
+ * Improve draft parser (C5): an LLM draft containing "TBD"
  * would fail the very check it exists to fix, so the parser rejects
  * it and the caller falls back to the marker-stripping template.
  */
@@ -545,7 +545,7 @@ const EXPECTED_LABEL_RE = /(^|\n)\s*expected\s*[:\-–]/i;
 const ACTUAL_LABEL_RE = /(^|\n)\s*actual\s*[:\-–]/i;
 
 /**
- * Confession lines (war-room round 2, F-3): text that states the
+ * Confession lines (round 2, F-3): text that states the
  * content is ABSENT — "not documented in the issue", "the issue does
  * not state the expected result". The Improve template writes exactly
  * these into its repro scaffolding when the source issue has no

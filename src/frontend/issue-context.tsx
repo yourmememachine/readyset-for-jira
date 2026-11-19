@@ -341,7 +341,7 @@ function SummaryImproveSection({
     } catch (err) {
       setMessage(toImproveMessage(err));
       // A stale draft is dead, exactly as in the main Improve flow
-      // (war-room B13): clear it and land on the error phase instead
+      // (B13): clear it and land on the error phase instead
       // of returning to review with a draft that can only ever fail
       // the same way again.
       if (isStaleDraftError(err)) {

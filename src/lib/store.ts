@@ -134,7 +134,7 @@ export const llmQuotaKey = (issueKey: string, day: Date): string =>
   `llmquota:${issueKey}:${day.toISOString().slice(0, 10)}`;
 
 /**
- * Scan checkpoint, v2 (war-room round 2, D4/F-1): a constant-size
+ * Scan checkpoint, v2 (round 2, D4/F-1): a constant-size
  * manifest — the seen set lives in per-page shards
  * (`rescan-seen:{project}:{scope}:{pageIndex}`, ≤ one page of keys
  * each), so the value never approaches the 240 KiB KVS limit and a
@@ -205,7 +205,7 @@ export function normalizeSettings(
   input: Partial<ProjectSettings> | undefined,
   base: ProjectSettings,
 ): ProjectSettings {
-  // Threshold floor (war-room round 2, E #5): an issue passing ZERO
+  // Threshold floor (round 2, E #5): an issue passing ZERO
   // substantive checks can still score 20 (priority + vacuous passes),
   // so a readyThreshold at or below 20 grades content-free issues
   // Ready. The floor keeps calibration free above the degenerate
@@ -238,7 +238,7 @@ export function normalizeSettings(
   if (ALL_CHECK_IDS.every((id) => !checksEnabled[id])) {
     for (const id of ALL_CHECK_IDS) checksEnabled[id] = base.checksEnabled[id];
   }
-  // Substantive-minimum guard (war-room round 2, E #5): due-date and
+  // Substantive-minimum guard (round 2, E #5): due-date and
   // no-placeholders pass vacuously on an empty issue, so a config that
   // enables ONLY vacuous checks (or strips the substantive ones below
   // a working weight) renormalizes a bare issue to 100 — a gate that
@@ -293,7 +293,7 @@ export function normalizeImproveSections(
   for (const raw of source) {
     if (typeof raw !== 'string') continue;
     // Control characters and newlines are stripped server-side
-    // (war-room round 2, E #6): a section name is interpolated into
+    // (round 2, E #6): a section name is interpolated into
     // the LLM *system* prompt, and the frontend's comma-split is not
     // a trust boundary — a name carrying "\nSYSTEM: …" must never
     // survive normalization as a free-standing prompt line.
@@ -350,7 +350,7 @@ export class ScoreStore {
 
   async saveScore(record: StoredScore): Promise<void> {
     const previous = await this.getScore(record.issueKey);
-    // Monotonic guard (war-room round 2, D12/F-13): triggers deliver
+    // Monotonic guard (round 2, D12/F-13): triggers deliver
     // at-least-once and Apply races its own event, so two invocations
     // can read-modify-write the same record concurrently. If the
     // stored record was computed STRICTLY later than the incoming one,
@@ -400,7 +400,7 @@ export class ScoreStore {
 
   /**
    * Flip `propertySynced` to true ONLY if the stored record is still
-   * exactly the record that was synced (war-room round 2, F-13): the
+   * exactly the record that was synced (round 2, F-13): the
    * panel/event retry paths PUT the cached score's property, and
    * saving the whole stale record back would clobber a rescore that
    * landed in between. A mismatch means a newer record exists — its
@@ -494,7 +494,7 @@ export class ScoreStore {
    * Scan checkpoints v2 (see {@link ScanCheckpoint}): a constant-size
    * manifest per origin — app scans write `rescan-app:{project}`,
    * UI chunks write `rescan-ui:{project}` — plus one seen-shard per
-   * page. Origins never share state (war-room B8), and the legacy
+   * page. Origins never share state (B8), and the legacy
    * shared key is never read again (round 2, F-1).
    */
   private checkpointKey(projectKey: string, scope: 'app' | 'ui'): string {
@@ -564,7 +564,7 @@ export class ScoreStore {
   }
 
   /**
-   * The field map is cached WITH its resolution time (war-room round
+   * The field map is cached WITH its resolution time (round
    * 2, D8): a site configuration treated as immutable stayed wrong
    * forever. Callers treat a map older than 24 h as stale and
    * re-resolve. A legacy bare map (written before the wrapper) reads
@@ -598,7 +598,7 @@ export class ScoreStore {
   }
 
   async saveDraft(draft: ImprovementDraft): Promise<void> {
-    // Drafts are cache, not state (war-room round 2, D11/E12): a
+    // Drafts are cache, not state (round 2, D11/E12): a
     // 30-day TTL bounds the draft:{issue}:{hash} key family, which
     // otherwise grew forever — drafts were previously deleted only
     // on a successful Apply.
@@ -607,7 +607,7 @@ export class ScoreStore {
     });
   }
 
-  /** Remove a consumed draft (war-room B22): an applied draft's hash is
+  /** Remove a consumed draft (B22): an applied draft's hash is
    *  stale by construction, and leaving it in KVS only orphans it. */
   async deleteDraft(issueKey: string, contentHash: string): Promise<void> {
     await this.kv.delete(draftKey(issueKey, contentHash));
@@ -626,13 +626,13 @@ export class ScoreStore {
     });
   }
 
-  /** Remove a consumed summary draft (war-room B22, as deleteDraft). */
+  /** Remove a consumed summary draft (B22, as deleteDraft). */
   async deleteSummaryDraft(issueKey: string, contentHash: string): Promise<void> {
     await this.kv.delete(summaryDraftKey(issueKey, contentHash));
   }
 
   /** Delete every draft (both kinds) held for an issue — the
-   *  issue-deleted event path (war-room round 2, E #12): drafts for a
+   *  issue-deleted event path (round 2, E #12): drafts for a
    *  dead issue are unreachable garbage without this. */
   async deleteIssueDrafts(issueKey: string): Promise<void> {
     for (const prefix of [`draft:${issueKey}:`, `sumdraft:${issueKey}:`]) {
@@ -644,7 +644,7 @@ export class ScoreStore {
   }
 
   /**
-   * Daily LLM-call quota counter (war-room round 2, E #12): drafting
+   * Daily LLM-call quota counter (round 2, E #12): drafting
    * is open to any viewer and every distinct content hash is a billed
    * call, so Improve caps LLM drafts per issue per day and falls back
    * to the (free, deterministic) template beyond the cap. Returns the
@@ -672,7 +672,7 @@ export class ScoreStore {
     const key = analyticsKey(projectKey, now);
     const current = (await this.kv.get<AnalyticsDay>(key)) ?? { scores: 0, drafts: 0, applies: 0 };
     current[field] += 1;
-    // 14-day TTL (war-room round 2, D11): only the last 7 days are
+    // 14-day TTL (round 2, D11): only the last 7 days are
     // ever read, and the per-day keys otherwise accumulated forever.
     // Accepted residual (D12): this read-modify-write can lose an
     // increment under true concurrency — the counters are advisory

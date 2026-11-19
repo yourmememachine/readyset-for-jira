@@ -109,7 +109,7 @@ export interface ScanResult {
 /** App-side (scheduled) page size: the 900 s invocation budget fits it. */
 const PAGE_SIZE = 100;
 /**
- * UI page size (war-room round 2, D5): a UI resolver invocation has a
+ * UI page size (round 2, D5): a UI resolver invocation has a
  * 25 s budget and a 100-issue chunk of REST search + per-issue KVS
  * writes + property PUTs cannot fit it — the chunk died mid-page with
  * no failure state recorded and its checkpoint pointing at the page
@@ -123,7 +123,7 @@ const BROWSE_PERMISSION = 'BROWSE_PROJECTS';
 /**
  * Project keys are interpolated into a quoted JQL string and written
  * to the nightly-rescan roster, so payload-supplied keys are held to
- * Jira's own key shape (war-room B11): an uppercase letter followed by
+ * Jira's own key shape (B11): an uppercase letter followed by
  * uppercase letters, digits, or underscores. Anything else is refused
  * before it can break out of the JQL quote or pollute the roster.
  * The regex itself lives in lib/jira (PROJECT_KEY_RE) so the JQL sink
@@ -175,7 +175,7 @@ export function settingsFingerprint(
  * Best-effort removal of an issue's JQL entity property (cross-review
  * B4): the stored record going away is not enough — the property is
  * what JQL searches and the workflow validators read. Used by the
- * exclusion paths and by scan reconciliation (war-room A2).
+ * exclusion paths and by scan reconciliation (A2).
  *
  * Round 2 (F-6): returns whether the property is GONE. A failure is
  * tombstoned (`propdel:{issueKey}`) and drained at the next scan
@@ -214,12 +214,12 @@ export async function drainPropertyDeletionTombstones(deps: ResolverDeps): Promi
   }
 }
 
-/** Field maps go stale after 24 h (war-room round 2, D8). */
+/** Field maps go stale after 24 h (round 2, D8). */
 export const FIELD_MAP_STALE_MS = 24 * 60 * 60 * 1000;
 
 /**
  * The field map scoring should use, plus whether it is DEGRADED
- * (war-room round 2, F-4): an injected map (tests) wins; otherwise the
+ * (round 2, F-4): an injected map (tests) wins; otherwise the
  * per-site map resolved from `GET /rest/api/3/field` and cached in KVS
  * with its resolution time (cross-review B8; round-2 D8 — a stale map
  * is re-resolved, and a legacy bare cache counts as resolved at 0).
@@ -252,7 +252,7 @@ export async function getEffectiveFieldMap(
       return { fieldMap: cached.map, degraded: false };
     }
     // Nothing cached and resolution failed: degrade to the default
-    // ids, UNcached, so the next call retries (war-room A4) — and
+    // ids, UNcached, so the next call retries (A4) — and
     // flag it, so persistence paths can refuse to write on it (F-4).
     return { fieldMap: DEFAULT_FIELD_MAP, degraded: true };
   }
@@ -271,7 +271,7 @@ export async function canAdminister(deps: ResolverDeps, projectKey: string): Pro
 }
 
 /**
- * Whether the invoking user may BROWSE the project (war-room round 2,
+ * Whether the invoking user may BROWSE the project (round 2,
  * D2/D3): the gate for every surface that serves stored scores to a
  * user (dashboard, rescan, Coach project actions). Fails closed — a
  * permission check that errors is a "no".
@@ -346,7 +346,7 @@ export async function scoreAndStore(
   // The unchanged-score skip (upgrade cross-review B2/A5) is only
   // sound when the previous write actually landed: the record tracks
   // that as `propertySynced`, and an unsynced record is rewritten by
-  // every later rescore until the write lands (war-room A1/C2 — the
+  // every later rescore until the write lands (A1/C2 — the
   // skip previously made a single failed write permanent and falsified
   // the "nightly rescan backfills" promise). With the skip, the
   // property's updatedAt means "score last changed".
@@ -496,7 +496,7 @@ export async function getIssuePanel(
   ) {
     if (cached.propertySynced !== true) {
       // The cached record is fresh, but its entity property never
-      // landed (war-room A1, second barrier): serving from cache must
+      // landed (A1, second barrier): serving from cache must
       // not freeze the JQL mirror in its failed state — retry the
       // write here, where the panel already pays a REST round trip.
       // The flip is conditional (round 2, F-13): only mark synced if
@@ -535,7 +535,7 @@ export async function getIssuePanel(
 }
 
 /**
- * Record a scan failure (war-room round 2, F-14): the scan STATE is
+ * Record a scan failure (round 2, F-14): the scan STATE is
  * written first, in its own best-effort try — the round-1 code wrote
  * the checkpoint first, so a KVS failure at exactly that moment left
  * the state stuck at 'scanning' with a 'failed' record that could
@@ -701,7 +701,7 @@ async function runScanChunk(
         }
       } catch (err) {
         // A failure inside the scoring loop is recorded exactly like
-        // a search failure (war-room A6): state first, then the
+        // a search failure (A6): state first, then the
         // checkpoint \u2014 and the checkpoint points at THIS page, whose
         // partial shard is already written, so a resume re-fetches
         // only this page.
@@ -767,8 +767,8 @@ async function runScanChunk(
       return { projectKey, scanned, resumed, complete: true };
     }
     if (!page.nextPageToken) {
-      // Pagination ended without the termination signal (war-room
-      // A13): isLast is the contract's only "complete" marker, so a
+      // Pagination ended without the termination signal
+      // (A13): isLast is the contract's only "complete" marker, so a
       // tokenless non-final page is a failed scan \u2014 never a complete
       // one, and never a reason to reconcile a partial seen-set.
       const err = new Error(
@@ -836,7 +836,7 @@ export async function getProjectDashboard(
 ): Promise<ProjectDashboardPayload> {
   const { projectKey } = payload;
   requireValidProjectKey(projectKey);
-  // Browse gate BEFORE registration (war-room round 2, D3): opening a
+  // Browse gate BEFORE registration (round 2, D3): opening a
   // dashboard used to register ANY project key into the nightly roster
   // and serve its stored stats to any authenticated user. A user who
   // cannot browse the project gets neither the registration side

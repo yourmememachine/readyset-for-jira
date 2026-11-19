@@ -29,7 +29,7 @@ export const IMPROVER_MODEL = 'claude-haiku-4-5-20251001';
 const MAX_COMPLETION_TOKENS = 600;
 
 /**
- * Hard ceiling on one LLM call (war-room B23): a hung `chat()` would
+ * Hard ceiling on one LLM call (B23): a hung `chat()` would
  * otherwise ride out the whole 25 s UI invocation budget and die with
  * it, taking the template fallback down too. Racing the call against
  * this timeout turns a hang into an ordinary LLM failure, which the

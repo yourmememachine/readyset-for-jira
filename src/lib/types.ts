@@ -182,7 +182,7 @@ export interface StoredScore extends ReadinessScore {
   source?: ScoreSource;
   /**
    * Whether the `readyset` entity property is known to mirror this
-   * record (war-room A1/C2). The unchanged-score skip of the property
+   * record (A1/C2). The unchanged-score skip of the property
    * PUT is only sound when the last write actually landed; a failed
    * write leaves this false and every later rescore retries. Absent
    * on records written before the flag existed — treated as unsynced,

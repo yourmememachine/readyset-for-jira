@@ -60,7 +60,7 @@ function cleanLines(text: string): string[] {
 
 /** Text worth preserving: at least a short sentence of real content. */
 function isMeaningful(text: string): boolean {
-  // Unicode letters/digits, as in the rubric (war-room B14).
+  // Unicode letters/digits, as in the rubric (B14).
   return text.replace(/[^\p{L}\p{N}]+/gu, '').length >= 20;
 }
 
@@ -304,7 +304,7 @@ export function buildTemplateDraft(
       sections.push(buildDefinitionOfDone(failedChecks, name));
     }
   }
-  // Bug pack (war-room C3): a bug failing repro-steps gets its repro
+  // Bug pack (C3): a bug failing repro-steps gets its repro
   // section appended — it is not part of the configured structure
   // (stories never see it), it is the draft addressing a failing
   // check the configured sections cannot express.

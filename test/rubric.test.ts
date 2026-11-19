@@ -527,7 +527,7 @@ describe('custom weights (Wave 2)', () => {
   });
 });
 
-describe('war-room rubric fixes (2026-11-18)', () => {
+describe('rubric fixes (2026-11-18)', () => {
   it('B14: non-English criteria text counts as meaningful content instead of stripping to nothing', () => {
     // The dedicated field filled with real Japanese criteria: before
     // the fix, hasMeaningfulContent stripped everything but a-z0-9

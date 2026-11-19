@@ -199,7 +199,7 @@ describe('Coach actions stay open-only under the Done policy (B9)', () => {
   });
 });
 
-describe('war-room fixes (2026-11-18)', () => {
+describe('fixes (2026-11-18)', () => {
   it('B20: project readiness follows donePolicy include (fix-first stays open-only, per the B9 pin)', async () => {
     const done = makeRawMessyIssue('RS-4');
     done.fields.status = { name: 'Done', statusCategory: { key: 'done' } };

@@ -130,7 +130,7 @@ export interface JiraAdapter {
  * instead of breaking.
  *
  * Duplicate names are decided by a precedence ladder, never by list
- * order (war-room round 2, F-7 \u2014 both first-wins and last-wins were
+ * order (round 2, F-7 \u2014 both first-wins and last-wins were
  * coin flips): (1) the slot's compiled default id, Atlassian's managed
  * field; (2) schema-type compatibility; (3) custom fields over system
  * fields; (4) the lowest numeric customfield id (ids allocate
@@ -411,7 +411,7 @@ export function normalizeIssue(
 /**
  * Issues of a project in stable key order for checkpointed scans.
  * Done issues are excluded unless the project's Done policy counts
- * them (war-room A3): a scan that never returns Done issues also
+ * them (A3): a scan that never returns Done issues also
  * never *sees* them, so reconciliation deleted their records nightly
  * and the `include` policy could never survive a scan.
  */
@@ -423,7 +423,7 @@ export function isValidProjectKey(projectKey: unknown): projectKey is string {
 }
 
 export function projectScanJql(projectKey: string, includeDone = false): string {
-  // Validation at the sink (war-room round 2, F-16): every caller is
+  // Validation at the sink (round 2, F-16): every caller is
   // checked today, but a legacy roster entry planted before validation
   // existed would otherwise be interpolated into JQL forever.
   if (!isValidProjectKey(projectKey)) {
@@ -437,7 +437,7 @@ export function projectScanJql(projectKey: string, includeDone = false): string 
 /**
  * The set of issue keys in a project that the given (user) adapter can
  * see, via paginated search — the visibility boundary for serving
- * stored scores (war-room round 2, E #1/#2 + D2/D3): KVS records carry
+ * stored scores (round 2, E #1/#2 + D2/D3): KVS records carry
  * no Jira permissions, so any read surface serving them to a user must
  * intersect with what that user can browse. Bounded at `maxPages`
  * pages; callers fail closed when the search itself fails.

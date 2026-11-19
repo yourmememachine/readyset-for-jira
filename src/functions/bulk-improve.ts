@@ -20,7 +20,7 @@ export interface BulkImproveResult {
   newScore?: number;
   error?: string;
   skipped?: string;
-  /** The write landed but a post-write confirmation step failed (war-room B1). */
+  /** The write landed but a post-write confirmation step failed (B1). */
   warning?: string;
 }
 
@@ -53,7 +53,7 @@ export async function bulkImproveTemplates(
     );
   }
   // The pre-fetch reads as the invoking user, like every other UI
-  // read (war-room A5 residual): Apply re-reads asUser before writing
+  // read (A5 residual): Apply re-reads asUser before writing
   // in any case, so drafting from app-token data the admin cannot see
   // bought nothing and leaked restricted content into a KVS draft.
   const readAdapter = deps.jiraUser ?? deps.jira;

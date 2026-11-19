@@ -1,5 +1,5 @@
 /**
- * War-room round 2 (2026-11-18) regression tests — one or more per
+ * Round 2 (2026-11-18) regression tests — one or more per
  * confirmed finding from the top-reviewer seats (D/E/F) as ruled by
  * the cross-critique chairs. Tests for findings already covered by
  * updated round-1 tests (checkpoints v2, settings clamps, F-9/F-10,

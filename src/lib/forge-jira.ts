@@ -123,7 +123,7 @@ export class ForgeJiraAdapter implements JiraAdapter {
         schema?: { type?: string; custom?: string };
       }>
     >(response, 'listFields');
-    // Carry the schema through (war-room round 2, F-7): the duplicate
+    // Carry the schema through (round 2, F-7): the duplicate
     // tiebreak in resolveFieldMap needs the field's type/origin, which
     // the old mapping discarded.
     return fields.map((field) => ({
@@ -234,7 +234,7 @@ export class ForgeJiraAdapter implements JiraAdapter {
     // excluded, its stored score is deleted — the JQL-indexed property
     // must go too, or JQL and the workflow validators keep enforcing a
     // grade the app no longer stands behind. 204 on success. A missing
-    // property (or issue) returns 404, NOT 204 (war-room round 2, D13 —
+    // property (or issue) returns 404, NOT 204 (round 2, D13 —
     // the old comment here claimed otherwise): treat 404 as success so
     // the delete is genuinely idempotent and the propdel tombstone
     // drain can terminate.

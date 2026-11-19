@@ -71,7 +71,7 @@ export function toImproveMessage(err: unknown): string {
     // The backend's refusal is already the actionable instruction
     // ("There is not enough text in this issue to suggest a better
     // summary. Add a description first.") — pass it through verbatim
-    // (war-room C4). The generic retryable fallback hid it, and
+    // (C4). The generic retryable fallback hid it, and
     // retrying a bare issue can never succeed.
     return message;
   }
@@ -118,7 +118,7 @@ export function beginApply(state: ImproveFlowState): ImproveFlowState {
 /**
  * Apply succeeded. The draft is consumed; the panel refetches so the
  * score on screen becomes the real post-Apply score from the result.
- * A post-write warning (war-room B1: the write landed, a confirmation
+ * A post-write warning (B1: the write landed, a confirmation
  * step failed) rides along as the phase message — success with a
  * note, never a retry offer.
  */

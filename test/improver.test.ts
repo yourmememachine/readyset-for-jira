@@ -697,7 +697,7 @@ describe('Summary Improve (Wave 3)', () => {
   });
 });
 
-describe('war-room fixes (2026-11-18)', () => {
+describe('fixes (2026-11-18)', () => {
   const throwingLlm = new FakeLlmClient(() => {
     throw new Error('LLM unavailable');
   });

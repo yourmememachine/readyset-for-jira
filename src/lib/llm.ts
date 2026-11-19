@@ -45,7 +45,7 @@ export interface LlmClient {
 export const DRAFT_HEADINGS = DEFAULT_IMPROVE_SECTIONS;
 
 /**
- * Cap on issue text interpolated into a prompt (war-room B23): a
+ * Cap on issue text interpolated into a prompt (B23): a
  * near-limit Jira description sent whole wastes tokens and can push
  * the call over its context.
  *
@@ -224,7 +224,7 @@ export function parseDraftMarkdown(
     body = [];
   };
   for (const line of markdown.split('\n')) {
-    // Code fences are container, not content (war-room B3): a reply
+    // Code fences are container, not content (B3): a reply
     // wrapped in ```markdown would otherwise write the fence lines
     // into the Jira description on Apply.
     if (/^\s*```/.test(line)) continue;
@@ -255,7 +255,7 @@ export function parseDraftMarkdown(
     0,
   );
   // The usable-content floor keys on the DRAFT KIND, not the section
-  // count (war-room round 2, F-18): full drafts always need 40 chars;
+  // count (round 2, F-18): full drafts always need 40 chars;
   // the ac-only caller opts into 10 ("Login succeeds" is a complete
   // criterion). The old `expectedSections.length <= 1` heuristic also
   // handed the 10-char floor to a full draft whenever a project
@@ -264,7 +264,7 @@ export function parseDraftMarkdown(
   if (sections.length === 0 || totalChars < minChars) {
     throw new Error('ReadySet: LLM draft reply had no usable content');
   }
-  // No placeholder markers in a draft (war-room C5): a draft carrying
+  // No placeholder markers in a draft (C5): a draft carrying
   // "TBD" would fail the no-placeholders check the moment it is
   // applied — the summary parser already scans for exactly this; the
   // template path strips markers instead of emitting them. Headings
@@ -333,7 +333,7 @@ function canonicalHeading(raw: string): string {
 }
 
 /**
- * Heading comparison key (war-room B4): models decorate headings —
+ * Heading comparison key (B4): models decorate headings —
  * "Acceptance criteria:", "1. Goal", "**Goal**" — and exact-string
  * matching silently killed every such draft, forcing permanent
  * template fallback for that model behaviour. Decoration is stripped
@@ -372,7 +372,7 @@ export function parseSummaryReply(reply: string): string {
         .replace(/^#+\s*/, '')
         .replace(/^["']|["']$/g, '')
         .trim()
-        // Bullet and bold dressing (war-room B12): "- **Summary:** …"
+        // Bullet and bold dressing (B12): "- **Summary:** …"
         // survived every strip above and was written to the issue
         // summary verbatim. Bold markers in a one-line summary are
         // never content.
